@@ -1,7 +1,7 @@
 from PIL import Image, ImageDraw, ImageFont
 import subprocess
 
-from tracking_env import GOAL, TOLERANCE
+from tracking_env import CONTROL_HZ, GOAL, TOLERANCE
 
 RESAMPLING = getattr(Image, "Resampling", Image)
 
@@ -10,7 +10,7 @@ class Video:
     def __init__(self, filename, stage):
         self.process = subprocess.Popen(
             ["ffmpeg", "-nostdin", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
-             "-s", "1280x664", "-r", "6", "-i", "-", "-c:v", "libx264", "-pix_fmt",
+             "-s", "1280x664", "-r", str(CONTROL_HZ), "-i", "-", "-c:v", "libx264", "-pix_fmt",
              "yuv420p", "-crf", "21", "-movflags", "+faststart", str(filename)],
             stdin=subprocess.PIPE,
         )
@@ -33,7 +33,7 @@ class Video:
         left, right, top, bottom = 86, 1240, 512, 626
         ceiling = 8.0
         chart_y = lambda gap: bottom - (bottom - top) * min(ceiling, gap) / ceiling
-        seconds = env.duration / 6
+        seconds = env.duration / CONTROL_HZ
         chart_x = lambda time: left + (right - left) * time / seconds
         draw.rectangle((left, top, right, bottom), fill="#fcfcf9", outline="#899593")
         draw.rectangle((left + 1, chart_y(GOAL + TOLERANCE), right - 1, chart_y(GOAL - TOLERANCE)),

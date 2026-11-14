@@ -7,7 +7,7 @@ import numpy as np
 from gymnasium.envs.registration import EnvSpec
 from stable_baselines3.common.env_checker import check_env
 
-from tracking_env import DT, GazeboTracking, Pose
+from tracking_env import CONTROL_HZ, DT, PERIOD_NS, GazeboTracking, Pose
 
 
 def smoke(args):
@@ -21,23 +21,27 @@ def smoke(args):
         frame, initial = env.reset(seed=2)
         assert frame.shape == (3, 72, 128) and frame.dtype == np.uint8
         stamp = initial["sim_stamp_ns"]
+        image_stamp = initial["image_stamp_ns"]
         x0 = initial["x"]
         start = monotonic()
-        for step in range(60):
+        count = 10 * CONTROL_HZ
+        for _ in range(count):
             _, reward, episode_done, truncated, info = env.step(np.array([0.25, 0.0], dtype=np.float32))
             assert math.isfinite(reward) and not episode_done and not truncated
             assert math.isclose((info["sim_stamp_ns"] - stamp) / 1e9, DT, abs_tol=1e-6), info
-            assert 0 <= info["sim_stamp_ns"] - info["image_stamp_ns"] <= 86_000_000, info
+            assert 0 <= info["sim_stamp_ns"] - info["image_stamp_ns"] < PERIOD_NS, info
+            assert math.isclose(info["image_stamp_ns"] - image_stamp, PERIOD_NS, abs_tol=2_000_001), info
+            image_stamp = info["image_stamp_ns"]
             stamp = info["sim_stamp_ns"]
         print(f"Fresh RGB, fixed step, vehicle moved {info['x'] - x0:.2f} m", flush=True)
         assert info["x"] - x0 > 5.0
-        print(f"Throughput {60 / (monotonic() - start):.1f} environment steps/s", flush=True)
+        print(f"Throughput {count / (monotonic() - start):.1f} environment steps/s", flush=True)
         _, reset = env.reset(seed=2)
         assert abs(reset["distance"] - initial["distance"]) < 0.02
         env._teleport(Pose(-3.0, 0), Pose(-1.4, 0))
         env.advance()
         env.target_speeds[:] = 0.0
-        for _ in range(12):
+        for _ in range(2 * CONTROL_HZ):
             _, _, terminated, _, info = env.step(np.array([1.0, 0.0], dtype=np.float32))
             if terminated:
                 break

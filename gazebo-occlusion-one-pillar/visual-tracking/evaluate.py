@@ -1,13 +1,17 @@
 import argparse
 import csv
 import json
+import math
 from pathlib import Path
 
 import numpy as np
 from sb3_contrib import RecurrentPPO
 import torch
 
-from tracking_env import GOAL, TOLERANCE, GazeboTracking
+from tracking_env import (
+    APPROACH_WEIGHT, CAMERA_HZ, CONTROL_HZ, GOAL, LUO_POSITION_SCALE_M, PILLAR_STAGES, STAGES, TOLERANCE,
+    TRACKING_REWARDS, GazeboTracking,
+)
 
 
 def evaluate(args):
@@ -15,7 +19,15 @@ def evaluate(args):
     torch.set_num_interop_threads(1)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
-    env = GazeboTracking(args.world, output / "sim", args.stage, record=args.video, rtf=args.rtf)
+    environment = GazeboTracking
+    if args.vehicle == "quad":
+        from quad_tracking_env import QuadTracking
+        environment = QuadTracking
+    env = environment(args.world, output / "sim", args.stage, record=args.video, rtf=args.rtf,
+                         penalize_clearance=args.clearance_penalty, remove_pillar=args.remove_pillar,
+                         pillar_center=tuple(args.pillar_center), tracking_reward=args.tracking_reward,
+                         luo_position_scale_m=args.luo_position_scale,
+                         penalize_horizontal_fov=args.horizontal_fov_penalty)
     video = None
     try:
         policy = None if args.constant_speed is not None else RecurrentPPO.load(args.model, device="cpu")
@@ -24,7 +36,7 @@ def evaluate(args):
             video = Video(output / "tracking.mp4", args.stage)
         trace, episodes = [], []
         for number in range(args.episodes):
-            seed = args.first_seed + number
+            seed = args.first_seed + number * args.seed_stride
             obs, info = env.reset(seed=seed)
             time_to_visible, time_to_gap = [], []
             lost = None
@@ -38,7 +50,8 @@ def evaluate(args):
             done = False
             while not done:
                 if policy is None:
-                    action = np.array([args.constant_speed / 0.75 - 1, 0], dtype=np.float32)
+                    action = np.zeros(env.action_space.shape, dtype=np.float32)
+                    action[0] = args.constant_speed / 0.75 - 1
                 else:
                     policy_input = np.zeros_like(obs) if args.blank_rgb else obs
                     action, state = policy.predict(policy_input, state=state, episode_start=episode_start,
@@ -70,14 +83,26 @@ def evaluate(args):
                 occlusion_events=count_lost, reacquired=len(time_to_visible),
                 recovery_times_s=time_to_visible, gap_recovery_times_s=time_to_gap,
             ))
+            if args.stage == "C1":
+                after_pillar = [row for row in scores if row["past_pillar"]]
+                episodes[-1].update(
+                    side="right" if info["route_side"] > 0 else "left",
+                    passed_pillar=bool(after_pillar),
+                    post_pillar_valid_rate=(sum(row["valid"] for row in after_pillar) / len(after_pillar)
+                                            if after_pillar else None),
+                )
         with (output / "trace.csv").open("w", newline="") as file:
             writer = csv.DictWriter(file, fieldnames=trace[0])
             writer.writeheader()
             writer.writerows(trace)
         report = dict(
+            vehicle=args.vehicle,
             stage=args.stage, model=str(args.model), episodes=len(episodes), target_gap_m=GOAL,
+            tracking_reward=args.tracking_reward,
+            horizontal_fov_penalty=args.horizontal_fov_penalty,
             blank_rgb=args.blank_rgb,
             constant_speed_mps=args.constant_speed,
+            camera_hz=CAMERA_HZ, control_hz=CONTROL_HZ,
             gap_band_m=[GOAL - TOLERANCE, GOAL + TOLERANCE],
             valid_rate=float(np.mean([row["valid"] for row in episodes])),
             visible_rate=float(np.mean([row["visible"] for row in episodes])),
@@ -86,7 +111,38 @@ def evaluate(args):
             early_ends=sum(row["ended_early"] for row in episodes),
             results=episodes,
         )
+        if args.stage in PILLAR_STAGES:
+            count = sum(row["occlusion_events"] for row in episodes)
+            recovered = [value for row in episodes for value in row["recovery_times_s"]]
+            restored_gap = [value for row in episodes for value in row["gap_recovery_times_s"]]
+            report.update(occlusion_events=count, reacquired=len(recovered),
+                          reacquisition_rate=len(recovered) / count if count else None,
+                          mean_reacquisition_s=float(np.mean(recovered)) if recovered else None,
+                          gap_restored=len(restored_gap),
+                          mean_gap_recovery_s=float(np.mean(restored_gap)) if restored_gap else None)
+            report["clearance_penalty_enabled"] = args.clearance_penalty
+            report["mean_episode_minimum_clearance_m"] = float(np.mean([
+                min(row["pillar_clearance_m"] for row in trace if row["seed"] == episode["seed"])
+                for episode in episodes
+            ]))
+        if args.tracking_reward in ("luo", "luo-progress"):
+            report["luo_c_m"] = args.luo_position_scale
+        if args.tracking_reward == "luo-progress":
+            report["approach_weight"] = APPROACH_WEIGHT
         report["passed"] = report["valid_rate"] >= 0.8 and report["collisions"] == 0
+        if args.stage == "C1":
+            report["pillar_removed"] = args.remove_pillar
+            report["pillar_center_m"] = args.pillar_center
+            report["routes"] = {}
+            for side in ("left", "right"):
+                routes = [row for row in episodes if row["side"] == side]
+                if routes:
+                    report["routes"][side] = dict(
+                        episodes=len(routes),
+                        passed_pillar=sum(row["passed_pillar"] for row in routes),
+                        valid_rate=float(np.mean([row["valid"] for row in routes])),
+                        collisions=sum(row["collision"] for row in routes),
+                    )
         (output / "evaluation.json").write_text(json.dumps(report, indent=2) + "\n")
         print(json.dumps({key: value for key, value in report.items() if key != "results"}), flush=True)
     finally:
@@ -102,17 +158,41 @@ if __name__ == "__main__":
     policy.add_argument("--model", type=Path)
     policy.add_argument("--constant-speed", type=float, help="Uncontrolled straight-line comparison, in m/s.")
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--stage", choices=("A", "B", "C"), default="A")
+    parser.add_argument("--stage", choices=STAGES, default="A")
+    parser.add_argument("--vehicle", choices=("car", "quad"), default="car")
+    parser.add_argument("--tracking-reward", choices=TRACKING_REWARDS, default="original")
+    parser.add_argument("--luo-position-scale", type=float, default=LUO_POSITION_SCALE_M,
+                        metavar="METRES", help="Position error scale in Luo et al.'s tracking reward.")
+    parser.add_argument("--horizontal-fov-penalty", action="store_true",
+                        help="Include the horizontal edge penalty used during training in the recorded rewards.")
     parser.add_argument("--episodes", type=int, default=20)
     parser.add_argument("--first-seed", type=int, default=20000)
+    parser.add_argument("--seed-stride", type=int, default=1)
     parser.add_argument("--rtf", type=float, default=12)
     parser.add_argument("--video", action="store_true")
     parser.add_argument("--blank-rgb", action="store_true", help="Check policy behavior with camera pixels masked.")
+    parser.add_argument("--clearance-penalty", action="store_true")
+    parser.add_argument("--remove-pillar", action="store_true",
+                        help="Keep C1 routes and measure clearance against the original pillar footprint.")
+    parser.add_argument("--pillar-center", nargs=2, type=float, metavar=("X", "Y"), default=(0.0, 0.0),
+                        help="Set the C1 pillar's center or reference footprint in world coordinates.")
     args = parser.parse_args()
-    if args.episodes < 1:
-        parser.error("--episodes must be positive")
+    if args.tracking_reward == "visible-gap" and args.horizontal_fov_penalty:
+        parser.error("visible-gap already includes a horizontal bearing penalty")
+    if not math.isfinite(args.luo_position_scale) or args.luo_position_scale <= 0:
+        parser.error("--luo-position-scale must be finite and positive")
+    if min(args.episodes, args.seed_stride) < 1:
+        parser.error("--episodes and --seed-stride must be positive")
     if args.constant_speed is not None and not 0 <= args.constant_speed <= 1.5:
         parser.error("--constant-speed must be within [0, 1.5]")
     if args.blank_rgb and not args.model:
         parser.error("--blank-rgb requires --model")
+    if args.clearance_penalty and args.stage not in PILLAR_STAGES:
+        parser.error("--clearance-penalty requires a stage with a pillar")
+    if args.remove_pillar and (args.stage != "C1" or args.clearance_penalty):
+        parser.error("--remove-pillar requires stage C1 with the clearance penalty disabled")
+    if not all(map(math.isfinite, args.pillar_center)):
+        parser.error("--pillar-center requires finite coordinates")
+    if tuple(args.pillar_center) != (0.0, 0.0) and args.stage != "C1":
+        parser.error("--pillar-center requires stage C1")
     evaluate(args)

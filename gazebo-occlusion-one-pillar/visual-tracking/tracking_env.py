@@ -22,13 +22,40 @@ from gz.msgs10.twist_pb2 import Twist
 from gz.msgs10.world_control_pb2 import WorldControl
 from gz.transport13 import Node
 
-DT = 1 / 6
-PHYSICS_STEPS = 40
-STEP_NS = 4_166_666
+CONTROL_HZ = CAMERA_HZ = 20
+DT = 1 / CONTROL_HZ
+STEP_NS = 2_000_000
+PERIOD_NS = 1_000_000_000 // CONTROL_HZ
+PHYSICS_STEPS = PERIOD_NS // STEP_NS
 WIDTH, HEIGHT = 128, 72
+HORIZONTAL_FOV_HALF_DEG = 35.0
+HORIZONTAL_FOV_HALF_RAD = math.radians(HORIZONTAL_FOV_HALF_DEG)
+FOV_PENALTY_START_DEG = 20.0
+FOV_PENALTY_START_RAD = math.radians(FOV_PENALTY_START_DEG)
+FOV_MAX_PENALTY = 0.20
 GOAL = 3.0
 TOLERANCE = 0.5
-HORIZON = 72
+HORIZON = 12 * CONTROL_HZ
+DISTANCE_WEIGHT = 0.85
+CENTER_WEIGHT = 0.15
+GAP_SCALE = 0.65
+IN_BAND_BONUS = 0.20
+APPROACH_WEIGHT = 0.20
+LOST_REWARD = -1.85
+LUO_REWARD_BASE = 1.0
+LUO_POSITION_SCALE_M = 3.0
+LUO_HEADING_WEIGHT = 0.1
+VISIBLE_GAP_DISTANCE_WEIGHT = 0.60
+VISIBLE_GAP_BEARING_WEIGHT = 0.15
+VISIBLE_GAP_LOST_REWARD = -0.50
+TRACKING_REWARDS = ("original", "luo", "luo-progress", "visible-gap")
+COLLISION_PENALTY = 5.0
+CLEARANCE_THRESHOLD_M = 0.50
+MAX_CLEARANCE_PENALTY = 0.18
+PILLAR_HALF_SIZE = (0.675, 0.725)
+CHASSIS_HALF_SIZE = (0.62, 0.315)
+PILLAR_STAGES = ("C", "C1")
+STAGES = ("A", "B", *PILLAR_STAGES)
 FRONT = "/occlusion/front/rgb"
 OVERHEAD = "/occlusion/overview/rgb"
 POSE = "/world/one_pillar/dynamic_pose/info"
@@ -45,12 +72,17 @@ class Pose:
     x: float
     y: float
     yaw: float = 0.0
+    z: float = 0.0
+    roll: float = 0.0
+    pitch: float = 0.0
 
 
 def from_message(pose):
     q = pose.orientation
-    return Pose(pose.position.x, pose.position.y,
-                math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z)))
+    yaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+    roll = math.atan2(2 * (q.w * q.x + q.y * q.z), 1 - 2 * (q.x * q.x + q.y * q.y))
+    pitch = math.asin(max(-1.0, min(1.0, 2 * (q.w * q.y - q.z * q.x))))
+    return Pose(pose.position.x, pose.position.y, yaw, pose.position.z, roll, pitch)
 
 
 def angle_to(robot, x, y):
@@ -58,9 +90,33 @@ def angle_to(robot, x, y):
     return math.atan2(math.sin(angle), math.cos(angle))
 
 
-def blocked_by_pillar(x1, y1, x2, y2):
+def luo_tracking_reward(pursuer, target, position_scale_m=LUO_POSITION_SCALE_M):
+    desired_x = pursuer.x + GOAL * math.cos(pursuer.yaw)
+    desired_y = pursuer.y + GOAL * math.sin(pursuer.yaw)
+    position_error = math.hypot(target.x - desired_x, target.y - desired_y)
+    heading_error = math.remainder(target.yaw - pursuer.yaw, math.tau)
+    return LUO_REWARD_BASE - position_error / position_scale_m - LUO_HEADING_WEIGHT * abs(heading_error)
+
+
+def horizontal_fov_penalty(bearing):
+    edge_fraction = (abs(bearing) - FOV_PENALTY_START_RAD) / (HORIZONTAL_FOV_HALF_RAD - FOV_PENALTY_START_RAD)
+    return FOV_MAX_PENALTY * min(1.0, max(0.0, edge_fraction))
+
+
+def visible_gap_reward(visible, distance, bearing):
+    # Keep a horizontal correction signal outside the camera's field of view.
+    bearing_cost = VISIBLE_GAP_BEARING_WEIGHT * min(abs(bearing) / HORIZONTAL_FOV_HALF_RAD, 2.0)
+    if not visible:
+        return VISIBLE_GAP_LOST_REWARD - bearing_cost
+    gap_error = abs(distance - GOAL)
+    gap_cost = VISIBLE_GAP_DISTANCE_WEIGHT * gap_error / (gap_error + TOLERANCE)
+    return 1.0 - gap_cost - bearing_cost
+
+
+def blocked_by_pillar(x1, y1, x2, y2, center=(0.0, 0.0)):
     enter, leave = 0.0, 1.0
-    for start, end, half in ((x1, x2, 0.675), (y1, y2, 0.725)):
+    for start, end, half, offset in zip((x1, y1), (x2, y2), PILLAR_HALF_SIZE, center):
+        start, end = start - offset, end - offset
         delta = end - start
         if abs(delta) < 1e-9:
             if abs(start) > half:
@@ -73,9 +129,45 @@ def blocked_by_pillar(x1, y1, x2, y2):
     return True
 
 
-def write_world(template, output, stage, record, rtf):
+def pillar_clearance(robot, center=(0.0, 0.0), body_half_size=CHASSIS_HALF_SIZE):
+    """Planar separation of the SDF chassis collision box and the pillar."""
+    robot = Pose(robot.x - center[0], robot.y - center[1], robot.yaw)
+    pillar_x, pillar_y = PILLAR_HALF_SIZE
+    body_x, body_y = body_half_size
+    c, s = math.cos(robot.yaw), math.sin(robot.yaw)
+    # Separating-axis test over the normals of both rectangles.
+    overlap = (
+        abs(robot.x) <= pillar_x + body_x * abs(c) + body_y * abs(s)
+        and abs(robot.y) <= pillar_y + body_x * abs(s) + body_y * abs(c)
+        and abs(c * robot.x + s * robot.y) <= body_x + pillar_x * abs(c) + pillar_y * abs(s)
+        and abs(-s * robot.x + c * robot.y) <= body_y + pillar_x * abs(s) + pillar_y * abs(c)
+    )
+    if overlap:
+        return 0.0
+
+    def point_to_box(x, y, half_x, half_y):
+        return math.hypot(max(0.0, abs(x) - half_x), max(0.0, abs(y) - half_y))
+
+    body_to_pillar = min(
+        point_to_box(robot.x + c * x - s * y, robot.y + s * x + c * y, pillar_x, pillar_y)
+        for x in (-body_x, body_x) for y in (-body_y, body_y)
+    )
+    pillar_to_body = min(
+        point_to_box(c * (x - robot.x) + s * (y - robot.y),
+                     -s * (x - robot.x) + c * (y - robot.y), body_x, body_y)
+        for x in (-pillar_x, pillar_x) for y in (-pillar_y, pillar_y)
+    )
+    return min(body_to_pillar, pillar_to_body)
+
+
+def clearance_penalty(distance, threshold=CLEARANCE_THRESHOLD_M, maximum=MAX_CLEARANCE_PENALTY):
+    return maximum * max(0.0, 1.0 - distance / threshold)
+
+
+def write_world(template, output, stage, record, rtf, remove_pillar=False, pillar_center=(0.0, 0.0)):
     tree = ET.parse(template)
     world = tree.getroot().find("world")
+    world.find("physics/max_step_size").text = "0.002"
     world.find("physics/real_time_factor").text = str(rtf)
     broadcaster = world.find("plugin[@name='gz::sim::systems::SceneBroadcaster']")
     ET.SubElement(broadcaster, "dynamic_pose_hertz").text = "1000"
@@ -85,13 +177,23 @@ def write_world(template, output, stage, record, rtf):
     contact = ET.SubElement(sensor, "contact")
     ET.SubElement(contact, "collision").text = "body_collision"
     ET.SubElement(contact, "topic").text = CONTACT
-    if stage != "C":
-        world.remove(world.find("model[@name='pillar']"))
-    image = chassis.find("sensor[@name='front_rgb']/camera/image")
+    pillar = world.find("model[@name='pillar']")
+    if stage not in PILLAR_STAGES or remove_pillar:
+        world.remove(pillar)
+    else:
+        pose = pillar.find("pose")
+        values = pose.text.split()
+        values[:2] = map(str, pillar_center)
+        pose.text = " ".join(values)
+    front = chassis.find("sensor[@name='front_rgb']")
+    front.find("update_rate").text = str(CAMERA_HZ)
+    image = front.find("camera/image")
     image.find("width").text = str(WIDTH)
     image.find("height").text = str(HEIGHT)
     if record:
-        camera = world.find("model[@name='overview']/link/sensor/camera")
+        overhead = world.find("model[@name='overview']/link/sensor")
+        overhead.find("update_rate").text = str(CAMERA_HZ)
+        camera = overhead.find("camera")
         world.find("model[@name='overview']/pose").text = "-1.0 0 25 0 1.5707963268 0"
         camera.find("image/width").text = "576"
         camera.find("image/height").text = "432"
@@ -104,12 +206,30 @@ class GazeboTracking(gym.Env):
     """Observations are bytes from the onboard camera, in CHW layout."""
 
     metadata = {"render_modes": []}
+    spawn_z = 0.223
+    camera_x = 0.50
+    collision_half_size = CHASSIS_HALF_SIZE
+    neutral_action = (-1.0, 0.0)
+    reset_attempts = 4
 
-    def __init__(self, template, directory, stage="A", record=False, rtf=8):
+    def __init__(self, template, directory, stage="A", record=False, rtf=8, penalize_clearance=False,
+                 remove_pillar=False, pillar_center=(0.0, 0.0), clearance_threshold=CLEARANCE_THRESHOLD_M,
+                 fixed_route_side=None, max_clearance_penalty=MAX_CLEARANCE_PENALTY,
+                 tracking_reward="original", luo_position_scale_m=LUO_POSITION_SCALE_M,
+                 penalize_horizontal_fov=False):
         super().__init__()
         self.observation_space = gym.spaces.Box(0, 255, shape=(3, HEIGHT, WIDTH), dtype=np.uint8)
-        self.action_space = gym.spaces.Box(-1.0, 1.0, shape=(2,), dtype=np.float32)
+        self.action_space = gym.spaces.Box(-1.0, 1.0, shape=(len(self.neutral_action),), dtype=np.float32)
         self.stage, self.record = stage, record
+        self.penalize_clearance = penalize_clearance
+        self.remove_pillar = remove_pillar
+        self.pillar_center = pillar_center
+        self.clearance_threshold = clearance_threshold
+        self.max_clearance_penalty = max_clearance_penalty
+        self.fixed_route_side = fixed_route_side
+        self.tracking_reward = tracking_reward
+        self.luo_position_scale_m = luo_position_scale_m
+        self.penalize_horizontal_fov = penalize_horizontal_fov
         self.directory = Path(directory).resolve()
         self.directory.mkdir(parents=True, exist_ok=True)
         self.partition = f"visual-follow-{uuid4().hex[:12]}"
@@ -126,7 +246,7 @@ class GazeboTracking(gym.Env):
         self.subscriptions = []
 
         output = self.directory / "world.sdf"
-        write_world(template, output, stage, record, rtf)
+        self.build_world(template, output, rtf)
         env = dict(os.environ, GZ_PARTITION=self.partition, GZ_IP="127.0.0.1",
                    LIBGL_ALWAYS_SOFTWARE=os.environ.get("LIBGL_ALWAYS_SOFTWARE", "1"))
         env.setdefault("LP_NUM_THREADS", "2")
@@ -163,6 +283,10 @@ class GazeboTracking(gym.Env):
         except BaseException:
             self.close()
             raise
+
+    def build_world(self, template, output, rtf):
+        write_world(template, output, self.stage, self.record, rtf, remove_pillar=self.remove_pillar,
+                    pillar_center=self.pillar_center)
 
     def _listen(self, message_type, topic, queue, parser):
         def callback(message):
@@ -220,10 +344,11 @@ class GazeboTracking(gym.Env):
                 if self.error:
                     raise RuntimeError("Invalid Gazebo sensor message") from self.error
                 has_pose = self.poses and self.poses[-1][0] >= expected - 8
-                # A 12 Hz camera may expose its last frame up to one image period
-                # before the 6 Hz control boundary.
-                has_image = self.images and self.images[-1][0] >= expected - 86_000_000
-                has_overhead = not self.record or self.overhead and self.overhead[-1][0] >= expected - 86_000_000
+                # The first exposure may be offset from the control boundary.
+                # A frame from the previous action must never satisfy this step.
+                has_image = self.images and self.images[-1][0] > max(start, expected - PERIOD_NS)
+                has_overhead = (not self.record or
+                                self.overhead and self.overhead[-1][0] > max(start, expected - PERIOD_NS))
                 if has_pose and has_image and has_overhead:
                     end_stamp, pursuer, target = self.poses[-1]
                     self.sim_stamp = end_stamp
@@ -250,7 +375,7 @@ class GazeboTracking(gym.Env):
         pair = Pose_V()
         for name, pose in (("pursuer", start), ("target", target)):
             msg = pair.pose.add(name=name)
-            msg.position.x, msg.position.y, msg.position.z = pose.x, pose.y, 0.223
+            msg.position.x, msg.position.y, msg.position.z = pose.x, pose.y, self.spawn_z
             msg.orientation.z = math.sin(pose.yaw / 2)
             msg.orientation.w = math.cos(pose.yaw / 2)
         self.request("/world/one_pillar/set_pose_vector", pair)
@@ -260,75 +385,137 @@ class GazeboTracking(gym.Env):
         rng = self.np_random
         self.elapsed = 0
         self.duration = HORIZON
-        self.previous_action = np.array([-1.0, 0.0], dtype=np.float32)
+        self.previous_action = np.array(self.neutral_action, dtype=np.float32)
         self.target_speeds = rng.uniform(0.60, 0.95, 4)
         self.turn = float(rng.choice([-1, 1]) * rng.uniform(0.11, 0.20))
-        if self.stage == "C":
+        if self.stage == "C1":
+            self.route_side = self.fixed_route_side
+            if self.route_side is None:
+                self.route_side = (1 if seed % 2 == 0 else -1) if seed is not None else int(rng.choice((-1, 1)))
+            side = self.route_side
+            start = Pose(side * rng.uniform(0.20, 0.42), rng.uniform(-6.1, -5.7),
+                         math.pi / 2 + side * rng.uniform(0.02, 0.06))
+            target = Pose(side * rng.uniform(1.30, 1.46), rng.uniform(-2.60, -2.35), math.pi / 2)
+            self.duration = 10 * CONTROL_HZ
+        elif self.stage == "C":
             start = Pose(rng.uniform(-3.8, -3.2), rng.uniform(-1.8, -1.4), rng.uniform(0.10, 0.24))
             target = Pose(rng.uniform(1.65, 1.95), rng.uniform(-2.6, -2.15), math.pi / 2)
-            self.duration = 60
+            self.duration = 10 * CONTROL_HZ
         else:
             x = rng.uniform(-6.0, -5.5)
             y = rng.uniform(-1.0, 1.0)
             start = Pose(x, y, rng.uniform(-0.22, 0.22))
             target = Pose(x + rng.uniform(2.1, 4.9), y + rng.uniform(-0.85, 0.85))
-        self.drive(self.pursuer, 0, 0)
-        self.drive(self.target, 0, 0)
-        self.advance()
-        self._teleport(start, target)
-        pursuer, target_pose, _ = self.advance()
-        if math.hypot(start.x - pursuer.x, start.y - pursuer.y) > 0.12:
-            raise RuntimeError(f"Pursuer retained velocity or reset failed: {start} → {pursuer}")
-        if math.hypot(target.x - target_pose.x, target.y - target_pose.y) > 0.12:
-            raise RuntimeError(f"Target retained velocity or reset failed: {target} → {target_pose}")
+        for attempt in range(self.reset_attempts):
+            self.drive(self.pursuer, 0, 0)
+            self.drive(self.target, 0, 0)
+            self.advance((4 if attempt == 0 else 10) * PHYSICS_STEPS)
+            self._teleport(start, target)
+            pursuer, target_pose, _ = self.settle_after_teleport()
+            if self.settled(start, pursuer) and self.settled(target, target_pose):
+                break
+        else:
+            raise RuntimeError(f"Vehicles failed to settle at reset: {start} → {pursuer}, {target} → {target_pose}")
         info = self.measure(pursuer, target_pose, False)
+        self.previous_gap_error = abs(info["distance"] - GOAL) if info["visible"] else None
         return self.observation(), info
 
+    def settle_after_teleport(self):
+        return self.advance(4 * PHYSICS_STEPS)
+
+    def settled(self, start, pose):
+        return math.hypot(start.x - pose.x, start.y - pose.y) <= 0.12
+
     def target_command(self):
-        section = min(self.elapsed // 18, 3)
-        turn = self.turn if self.stage == "B" and 10 <= self.elapsed < 36 else 0.0
+        section = min(self.elapsed // (3 * CONTROL_HZ), 3)
+        turn_starts = round((10 / 6) * CONTROL_HZ)
+        turn = self.turn if self.stage == "B" and turn_starts <= self.elapsed < 6 * CONTROL_HZ else 0.0
         return self.target_speeds[section], turn
 
     def measure(self, pursuer, target, collided):
         distance = math.hypot(target.x - pursuer.x, target.y - pursuer.y)
-        cx = pursuer.x + 0.50 * math.cos(pursuer.yaw)
-        cy = pursuer.y + 0.50 * math.sin(pursuer.yaw)
-        angle = angle_to(Pose(cx, cy, pursuer.yaw), target.x, target.y)
-        occluded = self.stage == "C" and blocked_by_pillar(cx, cy, target.x, target.y)
-        visible = abs(angle) <= math.radians(35) and not occluded
+        cx = pursuer.x + self.camera_x * math.cos(pursuer.yaw)
+        cy = pursuer.y + self.camera_x * math.sin(pursuer.yaw)
+        horizontal, in_view = self.target_in_camera(pursuer, target, cx, cy)
+        occluded = (self.stage in PILLAR_STAGES and not self.remove_pillar
+                    and blocked_by_pillar(cx, cy, target.x, target.y, self.pillar_center))
+        visible = in_view and not occluded
         valid = visible and abs(distance - GOAL) <= TOLERANCE and not collided
-        return {"time": self.elapsed * DT, "distance": distance, "bearing": angle,
+        info = {"time": self.elapsed * DT, "distance": distance, "bearing": horizontal,
                 "visible": visible, "occluded": occluded, "valid": valid, "collision": collided,
                 "x": pursuer.x, "y": pursuer.y, "target_x": target.x, "target_y": target.y,
                 "image_stamp_ns": self.image_stamp, "sim_stamp_ns": self.sim_stamp}
+        if self.stage == "C1":
+            half_x, half_y = self.collision_half_size
+            rear_y = pursuer.y - half_x * abs(math.sin(pursuer.yaw)) - half_y * abs(math.cos(pursuer.yaw))
+            info.update(route_side=self.route_side,
+                        past_pillar=rear_y > self.pillar_center[1] + PILLAR_HALF_SIZE[1])
+        return info
+
+    def target_in_camera(self, pursuer, target, cx, cy):
+        angle = angle_to(Pose(cx, cy, pursuer.yaw), target.x, target.y)
+        return angle, abs(angle) <= HORIZONTAL_FOV_HALF_RAD
 
     def observation(self):
         return np.ascontiguousarray(self.front_frame.transpose(2, 0, 1))
 
+    def pursuer_command(self, action):
+        v, w = 0.75 * (action[0] + 1), 1.5 * action[1]
+        self.drive(self.pursuer, v, w)
+        return {"v": v, "omega": w}
+
+    def outside(self, pursuer):
+        return abs(pursuer.x) > 12.15 or abs(pursuer.y) > 8.65
+
     def step(self, action):
         action = np.asarray(action, dtype=np.float32).clip(-1, 1)
-        v, w = 0.75 * (action[0] + 1), 1.5 * action[1]
         target_v, target_w = self.target_command()
         self.drive(self.target, target_v, target_w)
-        self.drive(self.pursuer, v, w)
+        command = self.pursuer_command(action)
         pursuer, target, collided = self.advance()
         self.elapsed += 1
         info = self.measure(pursuer, target, collided)
-        info.update(v=v, omega=w, target_speed=target_v)
-        if info["visible"]:
-            gap_error = abs(info["distance"] - GOAL)
-            gap_score = 2 * math.exp(-0.5 * (gap_error / 0.95) ** 2) - 1
-            center_score = max(0.0, 1.0 - abs(info["bearing"]) / math.radians(35))
-            reward = 0.7 * gap_score + 0.3 * center_score
+        info.update(command, target_speed=target_v)
+        gap_error = abs(info["distance"] - GOAL) if info["visible"] else None
+        if self.tracking_reward in ("luo", "luo-progress"):
+            reward = luo_tracking_reward(pursuer, target, self.luo_position_scale_m)
+        elif self.tracking_reward == "visible-gap":
+            reward = visible_gap_reward(info["visible"], info["distance"], info["bearing"])
+        elif gap_error is not None:
+            # Keep a gradient at large errors, where a narrow Gaussian saturates.
+            gap_score = 1.0 - min(gap_error / GAP_SCALE, 3.0)
+            center_score = 1.0 - min(abs(info["bearing"]) / math.radians(18), 2.0)
+            reward = DISTANCE_WEIGHT * gap_score + CENTER_WEIGHT * center_score
+            reward += IN_BAND_BONUS * info["valid"]
+            if info["distance"] < 2.0:
+                reward -= 0.5 * (2.0 - info["distance"])
         else:
-            reward = -0.35
-        reward -= 0.025 * float(np.mean(np.square(action - self.previous_action)))
+            reward = LOST_REWARD
+        if (self.tracking_reward in ("original", "luo-progress") and gap_error is not None
+                and self.previous_gap_error is not None):
+            improvement = (self.previous_gap_error - gap_error) / DT
+            reward += APPROACH_WEIGHT * float(np.clip(improvement, -1.0, 1.0))
+        self.previous_gap_error = gap_error
+        if self.penalize_horizontal_fov:
+            penalty = horizontal_fov_penalty(info["bearing"])
+            info["horizontal_fov_penalty"] = penalty
+            reward -= penalty
+        reward -= 0.01 * float(np.mean(np.square(action - self.previous_action)))
+        if self.stage == "A":
+            reward -= 0.12 * (float(command["omega"]) / 1.5) ** 2
         self.previous_action = action
-        outside = abs(pursuer.x) > 12.15 or abs(pursuer.y) > 8.65
-        failed = collided or outside
+        failed = collided or self.outside(pursuer)
+        # Keep the size of rewards per simulated second comparable to the 6 Hz run.
+        reward *= 6 / CONTROL_HZ
+        if self.stage in PILLAR_STAGES:
+            distance_to_pillar = pillar_clearance(pursuer, self.pillar_center, self.collision_half_size)
+            penalty = (clearance_penalty(distance_to_pillar, self.clearance_threshold, self.max_clearance_penalty)
+                       if self.penalize_clearance else 0.0)
+            info.update(pillar_clearance_m=distance_to_pillar, clearance_penalty=penalty)
+            reward -= penalty
         if failed:
             info["valid"] = False
-            reward -= 5.0
+            reward -= COLLISION_PENALTY
         return self.observation(), float(reward), failed, not failed and self.elapsed >= self.duration, info
 
     def close(self):

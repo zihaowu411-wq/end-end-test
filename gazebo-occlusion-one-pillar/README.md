@@ -9,7 +9,7 @@
 
 ## 新 AutoDL 实例
 
-1. 在「租用新实例」选「我的镜像」，选择已保存的 `gazebo-harmonic-visual-tracking-cu126-20261114`，选择驱动兼容 CUDA 12.6 的 NVIDIA GPU。
+1. 在「租用新实例」选「我的镜像」，选择包含 Gazebo Harmonic 和 CUDA 训练环境的镜像，选择驱动兼容 CUDA 12.6 的 NVIDIA GPU。
 2. 用 VS Code Remote-SSH 连接新实例。GitHub 仓库是私有仓库，需要在新实例使用自己的 GitHub 授权。也可以从已登录的 Windows 端把仓库传过去。
 3. 将仓库克隆到数据盘，并执行检查。系统镜像中的 Python 路径是 `/opt/gazebo-visual-tracking/venv/bin/python`。
 
@@ -23,6 +23,21 @@ gz sim --version
 "$PY" -c 'import torch; assert torch.cuda.is_available(); print(torch.__version__, torch.cuda.get_device_name())'
 "$PY" -u smoke.py --rtf 20
 ```
+
+## 定高四旋翼阶段 A
+
+场景模板、X3 模型资源、RGB 环境、训练和评估代码均在此仓库。依赖由系统盘镜像提供，项目和新训练输出位于数据盘。当前配置使用 Gazebo Sim 8.15、PyTorch `2.8.0+cu126`、Stable Baselines3 与 SB3 Contrib `2.9.0`。站在上例的 `visual-tracking` 目录运行以下命令。
+
+```bash
+"$PY" -u quad_smoke.py --output "checks/quad-flight-$(date +%Y%m%d-%H%M%S)"
+
+RUN="/root/autodl-tmp/results/quad-a-visible-gap-$(date +%Y%m%d-%H%M%S)"
+"$PY" -u train.py --vehicle quad --stage A --tracking-reward visible-gap \
+  --device cuda --environments 4 --rollout-steps 256 --learning-rate 0.0003 \
+  --seed 1800 --steps 65536 --rtf 30 --output "$RUN"
+```
+
+`visible-gap` 奖励同时约束目标可见、水平居中和保持 3 m 距离。策略只读取 20 Hz 前视 RGB。训练结束后先查看 `$RUN/training-summary.json`，用于判断是否进行正式评估。选定模型若要换机器续训，须把对应的 `final.zip` 或 `checkpoint-*.zip` 另外备份，到新实例后通过 `--resume` 指定它，并写入新的运行目录。
 
 ## 恢复后续训练
 
