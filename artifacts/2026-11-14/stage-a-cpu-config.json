@@ -1,0 +1,22 @@
+{
+  "world": "../one_pillar.sdf",
+  "output": "runs/straight-rgb-recurrent-ppo-seed17",
+  "stage": "A",
+  "seed": 17,
+  "steps": 12288,
+  "rtf": 20.0,
+  "device": "cpu",
+  "resume": null,
+  "n_steps": 256,
+  "batch_size": 64,
+  "n_epochs": 5,
+  "learning_rate": 0.0003,
+  "gamma": 0.99,
+  "gae_lambda": 0.95,
+  "clip_range": 0.2,
+  "ent_coef": 0.005,
+  "target_kl": 0.035,
+  "lstm_hidden_size": 96,
+  "control_hz": 6,
+  "gap_metres": 3.0
+}

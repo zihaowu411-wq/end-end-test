@@ -6,8 +6,12 @@
 secrets/
 credentials/
 .venv/
+.venv-gpu/
 __pycache__/
 outputs/
 results/
 checkpoints/
 *.log
+runs/
+checks/
+capture.*/
