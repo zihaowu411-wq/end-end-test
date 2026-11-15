@@ -18,14 +18,16 @@ from torch import nn
 from tracking_env import (
     APPROACH_WEIGHT, CAMERA_HZ, CENTER_WEIGHT, CLEARANCE_THRESHOLD_M,
     COLLISION_PENALTY, CONTROL_HZ, DISTANCE_WEIGHT, FOV_MAX_PENALTY, FOV_PENALTY_START_DEG,
-    GAMMA, GAP_SCALE, GOAL, HORIZONTAL_FOV_HALF_DEG,
-    IN_BAND_BONUS, LOST_REWARD, LUO_HEADING_WEIGHT, LUO_POSITION_SCALE_M, LUO_REWARD_BASE,
+    GAMMA, GAP_SCALE, GOAL, HEIGHT, HORIZONTAL_FOV_HALF_DEG,
+    IN_BAND_BONUS, LEGACY_CAR_ACTION_CHANGE_WEIGHT, LEGACY_CAR_DISTANCE_SCALE_M,
+    LEGACY_CAR_LOST_REWARD, LEGACY_CAR_WEIGHTS,
+    LOST_REWARD, LUO_HEADING_WEIGHT, LUO_POSITION_SCALE_M, LUO_REWARD_BASE,
     MAX_CLEARANCE_PENALTY, PILLAR_STAGES, STAGES, TOLERANCE, TRACKING_REWARDS,
     VALID_PROGRESS_BEARING_WEIGHT, VALID_PROGRESS_CENTER_PENALTY_WEIGHT,
     VALID_PROGRESS_DISTANCE_REWARD_SCALE_M, VALID_PROGRESS_DISTANCE_REWARD_WEIGHT,
     VALID_PROGRESS_GAP_SCALE_M, VALID_PROGRESS_GAP_WEIGHT,
     VALID_PROGRESS_IN_BAND_REWARD, VALID_PROGRESS_LOST_REWARD, VALID_PROGRESS_VISIBLE_REWARD,
-    VISIBLE_GAP_BEARING_WEIGHT, VISIBLE_GAP_DISTANCE_WEIGHT, VISIBLE_GAP_LOST_REWARD, GazeboTracking,
+    VISIBLE_GAP_BEARING_WEIGHT, VISIBLE_GAP_DISTANCE_WEIGHT, VISIBLE_GAP_LOST_REWARD, WIDTH, GazeboTracking,
 )
 
 
@@ -129,6 +131,7 @@ def make_env(args, directory, index):
                                   tracking_reward=args.tracking_reward,
                                   luo_position_scale_m=args.luo_position_scale,
                                   penalize_horizontal_fov=args.horizontal_fov_penalty,
+                                  camera_resolution=args.camera_resolution,
                                   pillar_center=(side * pillar_x, pillar_y),
                                   fixed_route_side=side if args.mirrored_pillar else None),
                    str(instance / "episodes"),
@@ -154,7 +157,19 @@ def train(args):
                               approach_weight=APPROACH_WEIGHT, lost=LOST_REWARD,
                               collision=-COLLISION_PENALTY, clearance_threshold_m=args.clearance_threshold,
                               max_clearance_penalty=args.max_clearance_penalty if args.clearance_penalty else 0.0))
-    if args.tracking_reward == "visible-gap":
+    legacy_car_weights = LEGACY_CAR_WEIGHTS.get(args.tracking_reward)
+    if legacy_car_weights is not None:
+        distance_weight, center_weight = legacy_car_weights
+        del config["reward"]["in_band_bonus"]
+        del config["reward"]["approach_weight"]
+        config["reward"].update(distance_weight=distance_weight,
+                                center_weight=center_weight,
+                                gap_scale=LEGACY_CAR_DISTANCE_SCALE_M,
+                                bearing_scale_deg=HORIZONTAL_FOV_HALF_DEG,
+                                lost=LEGACY_CAR_LOST_REWARD,
+                                action_change_weight=LEGACY_CAR_ACTION_CHANGE_WEIGHT,
+                                step_scale=6 / CONTROL_HZ)
+    elif args.tracking_reward == "visible-gap":
         for term in ("distance_weight", "center_weight", "gap_scale", "in_band_bonus", "approach_weight", "lost"):
             del config["reward"][term]
         config["reward"].update(distance_weight=VISIBLE_GAP_DISTANCE_WEIGHT, gap_scale_m=TOLERANCE,
@@ -221,11 +236,14 @@ if __name__ == "__main__":
     parser.add_argument("--vehicle", choices=("car", "quad"), default="car")
     parser.add_argument("--ideal-velocity", action="store_true",
                         help="Integrate speed commands directly for quadrotor stage A.")
-    parser.add_argument("--tracking-reward", choices=TRACKING_REWARDS, default="original")
+    parser.add_argument("--tracking-reward", choices=TRACKING_REWARDS,
+                        help="Defaults to legacy-car in ideal-velocity mode and original otherwise.")
     parser.add_argument("--luo-position-scale", type=float, default=LUO_POSITION_SCALE_M,
                         metavar="METRES", help="Position error scale in Luo et al.'s tracking reward.")
     parser.add_argument("--horizontal-fov-penalty", action="store_true",
                         help="Penalize the target approaching or crossing the horizontal edge of the camera.")
+    parser.add_argument("--camera-resolution", nargs=2, type=int, metavar=("WIDTH", "HEIGHT"),
+                        default=(WIDTH, HEIGHT), help="Onboard RGB image size in pixels.")
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--steps", type=int, default=12288)
     parser.add_argument("--rtf", type=float, default=12)
@@ -242,10 +260,14 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.ideal_velocity and (args.vehicle != "quad" or args.stage != "A"):
         parser.error("--ideal-velocity requires --vehicle quad and --stage A")
+    if args.tracking_reward is None:
+        args.tracking_reward = "legacy-car" if args.ideal_velocity else "original"
     if args.tracking_reward == "visible-gap" and args.horizontal_fov_penalty:
         parser.error("visible-gap already includes a horizontal bearing penalty")
     if not math.isfinite(args.luo_position_scale) or args.luo_position_scale <= 0:
         parser.error("--luo-position-scale must be finite and positive")
+    if min(args.camera_resolution) < 1:
+        parser.error("--camera-resolution dimensions must be positive")
     if args.environments < 1:
         parser.error("--environments must be positive")
     if args.clearance_penalty and args.stage not in PILLAR_STAGES:

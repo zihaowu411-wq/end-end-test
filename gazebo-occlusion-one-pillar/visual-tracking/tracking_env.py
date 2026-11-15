@@ -58,7 +58,14 @@ VALID_PROGRESS_BEARING_WEIGHT = 2.0
 VALID_PROGRESS_CENTER_PENALTY_WEIGHT = 0.25
 VALID_PROGRESS_DISTANCE_REWARD_WEIGHT = 0.30
 VALID_PROGRESS_DISTANCE_REWARD_SCALE_M = 0.95
-TRACKING_REWARDS = ("original", "luo", "luo-progress", "visible-gap", "valid-progress")
+LEGACY_CAR_DISTANCE_SCALE_M = 0.95
+LEGACY_CAR_WEIGHTS = {
+    "legacy-car": (0.70, 0.30),
+    "legacy-car-85": (0.85, 0.15),
+}
+LEGACY_CAR_LOST_REWARD = -0.35
+LEGACY_CAR_ACTION_CHANGE_WEIGHT = 0.025
+TRACKING_REWARDS = ("original", "luo", "luo-progress", "visible-gap", "valid-progress", *LEGACY_CAR_WEIGHTS)
 COLLISION_PENALTY = 5.0
 CLEARANCE_THRESHOLD_M = 0.50
 MAX_CLEARANCE_PENALTY = 0.18
@@ -146,6 +153,16 @@ def valid_progress_reward(info, previous_potential, terminated):
     return reward + GAMMA * potential - previous_potential, potential
 
 
+def legacy_car_reward(visible, distance, bearing, weights=LEGACY_CAR_WEIGHTS["legacy-car"]):
+    if not visible:
+        return LEGACY_CAR_LOST_REWARD
+    gap_error = (distance - GOAL) / LEGACY_CAR_DISTANCE_SCALE_M
+    gap_score = 2 * math.exp(-0.5 * gap_error ** 2) - 1
+    center_score = max(0.0, 1.0 - abs(bearing) / HORIZONTAL_FOV_HALF_RAD)
+    distance_weight, center_weight = weights
+    return distance_weight * gap_score + center_weight * center_score
+
+
 def blocked_by_pillar(x1, y1, x2, y2, center=(0.0, 0.0)):
     enter, leave = 0.0, 1.0
     for start, end, half, offset in zip((x1, y1), (x2, y2), PILLAR_HALF_SIZE, center):
@@ -197,7 +214,8 @@ def clearance_penalty(distance, threshold=CLEARANCE_THRESHOLD_M, maximum=MAX_CLE
     return maximum * max(0.0, 1.0 - distance / threshold)
 
 
-def write_world(template, output, stage, record, rtf, remove_pillar=False, pillar_center=(0.0, 0.0)):
+def write_world(template, output, stage, record, rtf, remove_pillar=False, pillar_center=(0.0, 0.0),
+                camera_resolution=(WIDTH, HEIGHT)):
     tree = ET.parse(template)
     world = tree.getroot().find("world")
     world.find("physics/max_step_size").text = "0.002"
@@ -221,8 +239,9 @@ def write_world(template, output, stage, record, rtf, remove_pillar=False, pilla
     front = chassis.find("sensor[@name='front_rgb']")
     front.find("update_rate").text = str(CAMERA_HZ)
     image = front.find("camera/image")
-    image.find("width").text = str(WIDTH)
-    image.find("height").text = str(HEIGHT)
+    width, height = camera_resolution
+    image.find("width").text = str(width)
+    image.find("height").text = str(height)
     if record:
         overhead = world.find("model[@name='overview']/link/sensor")
         overhead.find("update_rate").text = str(CAMERA_HZ)
@@ -249,9 +268,11 @@ class GazeboTracking(gym.Env):
                  remove_pillar=False, pillar_center=(0.0, 0.0), clearance_threshold=CLEARANCE_THRESHOLD_M,
                  fixed_route_side=None, max_clearance_penalty=MAX_CLEARANCE_PENALTY,
                  tracking_reward="original", luo_position_scale_m=LUO_POSITION_SCALE_M,
-                 penalize_horizontal_fov=False):
+                 penalize_horizontal_fov=False, camera_resolution=(WIDTH, HEIGHT)):
         super().__init__()
-        self.observation_space = gym.spaces.Box(0, 255, shape=(3, HEIGHT, WIDTH), dtype=np.uint8)
+        self.camera_resolution = tuple(camera_resolution)
+        width, height = self.camera_resolution
+        self.observation_space = gym.spaces.Box(0, 255, shape=(3, height, width), dtype=np.uint8)
         self.action_space = gym.spaces.Box(-1.0, 1.0, shape=(len(self.neutral_action),), dtype=np.float32)
         self.stage, self.record = stage, record
         self.penalize_clearance = penalize_clearance
@@ -319,7 +340,7 @@ class GazeboTracking(gym.Env):
 
     def build_world(self, template, output, rtf):
         write_world(template, output, self.stage, self.record, rtf, remove_pillar=self.remove_pillar,
-                    pillar_center=self.pillar_center)
+                    pillar_center=self.pillar_center, camera_resolution=self.camera_resolution)
 
     def _listen(self, message_type, topic, queue, parser):
         def callback(message):
@@ -516,12 +537,16 @@ class GazeboTracking(gym.Env):
         info.update(command, target_speed=target_v)
         failed = collided or self.outside(pursuer)
         gap_error = abs(info["distance"] - GOAL) if info["visible"] else None
+        legacy_car_weights = LEGACY_CAR_WEIGHTS.get(self.tracking_reward)
+        legacy_car = legacy_car_weights is not None
         if self.tracking_reward in ("luo", "luo-progress"):
             reward = luo_tracking_reward(pursuer, target, self.luo_position_scale_m)
         elif self.tracking_reward == "visible-gap":
             reward = visible_gap_reward(info["visible"], info["distance"], info["bearing"])
         elif self.tracking_reward == "valid-progress":
             reward, self.previous_potential = valid_progress_reward(info, self.previous_potential, failed)
+        elif legacy_car:
+            reward = legacy_car_reward(info["visible"], info["distance"], info["bearing"], legacy_car_weights)
         elif gap_error is not None:
             # Keep a gradient at large errors, where a narrow Gaussian saturates.
             gap_score = 1.0 - min(gap_error / GAP_SCALE, 3.0)
@@ -541,8 +566,9 @@ class GazeboTracking(gym.Env):
             penalty = horizontal_fov_penalty(info["bearing"])
             info["horizontal_fov_penalty"] = penalty
             reward -= penalty
-        reward -= 0.01 * float(np.mean(np.square(action - self.previous_action)))
-        if self.stage == "A":
+        action_change_weight = LEGACY_CAR_ACTION_CHANGE_WEIGHT if legacy_car else 0.01
+        reward -= action_change_weight * float(np.mean(np.square(action - self.previous_action)))
+        if self.stage == "A" and not legacy_car:
             reward -= 0.12 * (float(command["omega"]) / 1.5) ** 2
         self.previous_action = action
         # Keep the size of rewards per simulated second comparable to the 6 Hz run.

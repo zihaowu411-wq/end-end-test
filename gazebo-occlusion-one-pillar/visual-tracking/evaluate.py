@@ -10,7 +10,7 @@ import torch
 
 from tracking_env import (
     APPROACH_WEIGHT, CAMERA_HZ, CONTROL_HZ, GOAL, LUO_POSITION_SCALE_M, PILLAR_STAGES, STAGES, TOLERANCE,
-    TRACKING_REWARDS, GazeboTracking,
+    HEIGHT, TRACKING_REWARDS, WIDTH, GazeboTracking,
 )
 
 
@@ -23,14 +23,19 @@ def evaluate(args):
     if args.vehicle == "quad":
         from quad_tracking_env import IdealQuadTracking, QuadTracking
         environment = IdealQuadTracking if getattr(args, "ideal_velocity", False) else QuadTracking
+    policy = None if args.constant_speed is not None else RecurrentPPO.load(args.model, device="cpu")
+    camera_resolution = (WIDTH, HEIGHT)
+    if policy is not None:
+        _, height, width = policy.observation_space.shape
+        camera_resolution = (width, height)
     env = environment(args.world, output / "sim", args.stage, record=args.video, rtf=args.rtf,
                          penalize_clearance=args.clearance_penalty, remove_pillar=args.remove_pillar,
                          pillar_center=tuple(args.pillar_center), tracking_reward=args.tracking_reward,
                          luo_position_scale_m=args.luo_position_scale,
-                         penalize_horizontal_fov=args.horizontal_fov_penalty)
+                         penalize_horizontal_fov=args.horizontal_fov_penalty,
+                         camera_resolution=camera_resolution)
     video = None
     try:
-        policy = None if args.constant_speed is not None else RecurrentPPO.load(args.model, device="cpu")
         if args.video:
             from replay import Video
             video = Video(output / "tracking.mp4", args.stage)
@@ -102,7 +107,7 @@ def evaluate(args):
             horizontal_fov_penalty=args.horizontal_fov_penalty,
             blank_rgb=args.blank_rgb,
             constant_speed_mps=args.constant_speed,
-            camera_hz=CAMERA_HZ, control_hz=CONTROL_HZ,
+            camera_hz=CAMERA_HZ, control_hz=CONTROL_HZ, camera_resolution=camera_resolution,
             gap_band_m=[GOAL - TOLERANCE, GOAL + TOLERANCE],
             valid_rate=float(np.mean([row["valid"] for row in episodes])),
             visible_rate=float(np.mean([row["visible"] for row in episodes])),

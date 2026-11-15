@@ -7,7 +7,7 @@ import numpy as np
 from gz.msgs10.twist_pb2 import Twist
 
 from tracking_env import (
-    CONTACT, CONTROL_HZ, DT, GazeboTracking, HEIGHT, HORIZONTAL_FOV_HALF_RAD, Pose, WIDTH, write_world,
+    CONTACT, CONTROL_HZ, DT, GazeboTracking, HORIZONTAL_FOV_HALF_RAD, Pose, write_world,
 )
 
 
@@ -22,6 +22,13 @@ def add_box_visual(link, name, pose, size, color):
     ET.SubElement(visual, "pose").text = pose
     box = ET.SubElement(ET.SubElement(visual, "geometry"), "box")
     ET.SubElement(box, "size").text = size
+    set_visual_color(visual, color)
+
+
+def set_visual_color(visual, color):
+    material = visual.find("material")
+    if material is not None:
+        visual.remove(material)
     material = ET.SubElement(visual, "material")
     ET.SubElement(material, "ambient").text = color
     ET.SubElement(material, "diffuse").text = color
@@ -44,6 +51,9 @@ def x3_model(name, pose, color, source, demo):
     for joint in model.findall("joint"):
         if joint.find("parent").text == "base_link":
             joint.find("parent").text = "chassis"
+    if name == "target":
+        for visual in model.findall("link/visual"):
+            set_visual_color(visual, color)
     add_box_visual(base, "tracking_color", "0 0 0.065 0 0 0", "0.32 0.24 0.055", color)
     for plugin in demo.findall("plugin"):
         if "multicopter" not in plugin.get("filename", ""):
@@ -110,7 +120,7 @@ class QuadTracking(GazeboTracking):
         source_world = output.with_name("quad-template.sdf")
         tree.write(source_world, encoding="utf-8", xml_declaration=True)
         write_world(source_world, output, self.stage, self.record, rtf, remove_pillar=self.remove_pillar,
-                    pillar_center=self.pillar_center)
+                    pillar_center=self.pillar_center, camera_resolution=self.camera_resolution)
 
     def settle_after_teleport(self):
         # Take the first sample after teleporting so the pose reset is not
@@ -183,7 +193,8 @@ class QuadTracking(GazeboTracking):
         vertical = sp * forward + cp * dz
         horizontal = math.atan2(cr * lateral + sr * vertical, depth)
         elevation = math.atan2(-sr * lateral + cr * vertical, depth)
-        vertical_limit = math.atan(math.tan(HORIZONTAL_FOV_HALF_RAD) * HEIGHT / WIDTH)
+        width, height = self.camera_resolution
+        vertical_limit = math.atan(math.tan(HORIZONTAL_FOV_HALF_RAD) * height / width)
         return horizontal, depth > 0 and abs(horizontal) <= HORIZONTAL_FOV_HALF_RAD and abs(elevation) <= vertical_limit
 
     def measure(self, pursuer, target, collided):
