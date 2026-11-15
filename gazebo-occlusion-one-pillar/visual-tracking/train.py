@@ -123,7 +123,8 @@ def make_env(args, directory, index):
     environment = GazeboTracking
     if args.vehicle == "quad":
         from quad_tracking_env import IdealQuadTracking, QuadTracking
-        environment = IdealQuadTracking if getattr(args, "ideal_velocity", False) else QuadTracking
+        quad_environment = IdealQuadTracking if getattr(args, "ideal_velocity", False) else QuadTracking
+        environment = partial(quad_environment, cube_target=getattr(args, "cube_target", False))
     return Monitor(environment(args.world, instance, args.stage, rtf=args.rtf,
                                   penalize_clearance=args.clearance_penalty,
                                   clearance_threshold=args.clearance_threshold,
@@ -234,6 +235,8 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--stage", choices=STAGES, default="A")
     parser.add_argument("--vehicle", choices=("car", "quad"), default="car")
+    parser.add_argument("--cube-target", action="store_true",
+                        help="Render the quadrotor target as a red cube.")
     parser.add_argument("--ideal-velocity", action="store_true",
                         help="Integrate speed commands directly for quadrotor stage A.")
     parser.add_argument("--tracking-reward", choices=TRACKING_REWARDS,
@@ -258,6 +261,8 @@ if __name__ == "__main__":
     parser.add_argument("--mirrored-pillar", nargs=2, type=float, metavar=("ABS_X", "Y"),
                         help="Pair each C1 route side with a mirrored pillar center.")
     args = parser.parse_args()
+    if args.cube_target and args.vehicle != "quad":
+        parser.error("--cube-target requires --vehicle quad")
     if args.ideal_velocity and (args.vehicle != "quad" or args.stage != "A"):
         parser.error("--ideal-velocity requires --vehicle quad and --stage A")
     if args.tracking_reward is None:

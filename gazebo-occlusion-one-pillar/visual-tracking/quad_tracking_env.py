@@ -12,6 +12,7 @@ from tracking_env import (
 
 
 ALTITUDE_M = 3.0
+TARGET_CUBE_SIDE_M = 0.68
 PILLAR_HEIGHT_M = 6.0
 X3_DEMO = Path("/usr/share/gz/gz-sim8/worlds/multicopter_velocity_control.sdf")
 X3_ASSETS = Path(__file__).resolve().parent / "assets" / "x3"
@@ -34,7 +35,7 @@ def set_visual_color(visual, color):
     ET.SubElement(material, "diffuse").text = color
 
 
-def x3_model(name, pose, color, source, demo):
+def x3_model(name, pose, color, source, demo, *, cube_visual=False):
     model = deepcopy(source)
     model.set("name", name)
     model.find("pose").text = pose
@@ -51,10 +52,17 @@ def x3_model(name, pose, color, source, demo):
     for joint in model.findall("joint"):
         if joint.find("parent").text == "base_link":
             joint.find("parent").text = "chassis"
-    if name == "target":
-        for visual in model.findall("link/visual"):
-            set_visual_color(visual, color)
-    add_box_visual(base, "tracking_color", "0 0 0.065 0 0 0", "0.32 0.24 0.055", color)
+    if cube_visual:
+        for link in model.findall("link"):
+            for visual in link.findall("visual"):
+                link.remove(visual)
+        side = str(TARGET_CUBE_SIDE_M)
+        add_box_visual(base, "tracking_cube", "0 0 0 0 0 0", " ".join([side] * 3), color)
+    else:
+        if name == "target":
+            for visual in model.findall("link/visual"):
+                set_visual_color(visual, color)
+        add_box_visual(base, "tracking_color", "0 0 0.065 0 0 0", "0.32 0.24 0.055", color)
     for plugin in demo.findall("plugin"):
         if "multicopter" not in plugin.get("filename", ""):
             continue
@@ -90,6 +98,10 @@ class QuadTracking(GazeboTracking):
     reset_stable_steps = 3
     reset_settle_steps = 3 * CONTROL_HZ
 
+    def __init__(self, *args, cube_target=False, **kwargs):
+        self.cube_target = cube_target
+        super().__init__(*args, **kwargs)
+
     def build_world(self, template, output, rtf):
         tree = ET.parse(template)
         world = tree.getroot().find("world")
@@ -103,7 +115,8 @@ class QuadTracking(GazeboTracking):
             old = world.find(f"model[@name='{name}']")
             values = old.find("pose").text.split()
             values[2] = str(self.spawn_z)
-            model = x3_model(name, " ".join(values), color, source, demo)
+            model = x3_model(name, " ".join(values), color, source, demo,
+                             cube_visual=name == "target" and self.cube_target)
             if name == "pursuer":
                 camera = deepcopy(old.find("link/sensor[@name='front_rgb']"))
                 camera.find("pose").text = f"{self.camera_x} 0 0 0 0 0"

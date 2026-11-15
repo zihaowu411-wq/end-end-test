@@ -1,5 +1,6 @@
 import argparse
 import csv
+from functools import partial
 import json
 import math
 from pathlib import Path
@@ -22,7 +23,8 @@ def evaluate(args):
     environment = GazeboTracking
     if args.vehicle == "quad":
         from quad_tracking_env import IdealQuadTracking, QuadTracking
-        environment = IdealQuadTracking if getattr(args, "ideal_velocity", False) else QuadTracking
+        quad_environment = IdealQuadTracking if getattr(args, "ideal_velocity", False) else QuadTracking
+        environment = partial(quad_environment, cube_target=getattr(args, "cube_target", False))
     policy = None if args.constant_speed is not None else RecurrentPPO.load(args.model, device="cpu")
     camera_resolution = (WIDTH, HEIGHT)
     if policy is not None:
@@ -103,7 +105,7 @@ def evaluate(args):
         report = dict(
             vehicle=args.vehicle, ideal_velocity=getattr(args, "ideal_velocity", False),
             stage=args.stage, model=str(args.model), episodes=len(episodes), target_gap_m=GOAL,
-            tracking_reward=args.tracking_reward,
+            tracking_reward=args.tracking_reward, cube_target=getattr(args, "cube_target", False),
             horizontal_fov_penalty=args.horizontal_fov_penalty,
             blank_rgb=args.blank_rgb,
             constant_speed_mps=args.constant_speed,
@@ -165,6 +167,8 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--stage", choices=STAGES, default="A")
     parser.add_argument("--vehicle", choices=("car", "quad"), default="car")
+    parser.add_argument("--cube-target", action="store_true",
+                        help="Render the quadrotor target as a red cube.")
     parser.add_argument("--ideal-velocity", action="store_true",
                         help="Integrate speed commands directly for quadrotor stage A.")
     parser.add_argument("--tracking-reward", choices=TRACKING_REWARDS, default="original")
@@ -184,6 +188,8 @@ if __name__ == "__main__":
     parser.add_argument("--pillar-center", nargs=2, type=float, metavar=("X", "Y"), default=(0.0, 0.0),
                         help="Set the C1 pillar's center or reference footprint in world coordinates.")
     args = parser.parse_args()
+    if args.cube_target and args.vehicle != "quad":
+        parser.error("--cube-target requires --vehicle quad")
     if args.ideal_velocity and (args.vehicle != "quad" or args.stage != "A"):
         parser.error("--ideal-velocity requires --vehicle quad and --stage A")
     if args.tracking_reward == "visible-gap" and args.horizontal_fov_penalty:
