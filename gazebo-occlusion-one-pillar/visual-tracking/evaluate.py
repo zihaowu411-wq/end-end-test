@@ -21,8 +21,8 @@ def evaluate(args):
     output.mkdir(parents=True, exist_ok=False)
     environment = GazeboTracking
     if args.vehicle == "quad":
-        from quad_tracking_env import QuadTracking
-        environment = QuadTracking
+        from quad_tracking_env import IdealQuadTracking, QuadTracking
+        environment = IdealQuadTracking if getattr(args, "ideal_velocity", False) else QuadTracking
     env = environment(args.world, output / "sim", args.stage, record=args.video, rtf=args.rtf,
                          penalize_clearance=args.clearance_penalty, remove_pillar=args.remove_pillar,
                          pillar_center=tuple(args.pillar_center), tracking_reward=args.tracking_reward,
@@ -96,7 +96,7 @@ def evaluate(args):
             writer.writeheader()
             writer.writerows(trace)
         report = dict(
-            vehicle=args.vehicle,
+            vehicle=args.vehicle, ideal_velocity=getattr(args, "ideal_velocity", False),
             stage=args.stage, model=str(args.model), episodes=len(episodes), target_gap_m=GOAL,
             tracking_reward=args.tracking_reward,
             horizontal_fov_penalty=args.horizontal_fov_penalty,
@@ -160,6 +160,8 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--stage", choices=STAGES, default="A")
     parser.add_argument("--vehicle", choices=("car", "quad"), default="car")
+    parser.add_argument("--ideal-velocity", action="store_true",
+                        help="Integrate speed commands directly for quadrotor stage A.")
     parser.add_argument("--tracking-reward", choices=TRACKING_REWARDS, default="original")
     parser.add_argument("--luo-position-scale", type=float, default=LUO_POSITION_SCALE_M,
                         metavar="METRES", help="Position error scale in Luo et al.'s tracking reward.")
@@ -177,6 +179,8 @@ if __name__ == "__main__":
     parser.add_argument("--pillar-center", nargs=2, type=float, metavar=("X", "Y"), default=(0.0, 0.0),
                         help="Set the C1 pillar's center or reference footprint in world coordinates.")
     args = parser.parse_args()
+    if args.ideal_velocity and (args.vehicle != "quad" or args.stage != "A"):
+        parser.error("--ideal-velocity requires --vehicle quad and --stage A")
     if args.tracking_reward == "visible-gap" and args.horizontal_fov_penalty:
         parser.error("visible-gap already includes a horizontal bearing penalty")
     if not math.isfinite(args.luo_position_scale) or args.luo_position_scale <= 0:

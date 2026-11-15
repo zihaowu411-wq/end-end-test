@@ -18,14 +18,17 @@ from torch import nn
 from tracking_env import (
     APPROACH_WEIGHT, CAMERA_HZ, CENTER_WEIGHT, CLEARANCE_THRESHOLD_M,
     COLLISION_PENALTY, CONTROL_HZ, DISTANCE_WEIGHT, FOV_MAX_PENALTY, FOV_PENALTY_START_DEG,
-    GAP_SCALE, GOAL, HORIZONTAL_FOV_HALF_DEG,
+    GAMMA, GAP_SCALE, GOAL, HORIZONTAL_FOV_HALF_DEG,
     IN_BAND_BONUS, LOST_REWARD, LUO_HEADING_WEIGHT, LUO_POSITION_SCALE_M, LUO_REWARD_BASE,
     MAX_CLEARANCE_PENALTY, PILLAR_STAGES, STAGES, TOLERANCE, TRACKING_REWARDS,
+    VALID_PROGRESS_BEARING_WEIGHT, VALID_PROGRESS_CENTER_PENALTY_WEIGHT,
+    VALID_PROGRESS_DISTANCE_REWARD_SCALE_M, VALID_PROGRESS_DISTANCE_REWARD_WEIGHT,
+    VALID_PROGRESS_GAP_SCALE_M, VALID_PROGRESS_GAP_WEIGHT,
+    VALID_PROGRESS_IN_BAND_REWARD, VALID_PROGRESS_LOST_REWARD, VALID_PROGRESS_VISIBLE_REWARD,
     VISIBLE_GAP_BEARING_WEIGHT, VISIBLE_GAP_DISTANCE_WEIGHT, VISIBLE_GAP_LOST_REWARD, GazeboTracking,
 )
 
 
-GAMMA = 0.99 ** (6 / CONTROL_HZ)
 GAE_LAMBDA = 0.95 ** (6 / CONTROL_HZ)
 
 
@@ -117,8 +120,8 @@ def make_env(args, directory, index):
     pillar_x, pillar_y = args.mirrored_pillar or (0.0, 0.0)
     environment = GazeboTracking
     if args.vehicle == "quad":
-        from quad_tracking_env import QuadTracking
-        environment = QuadTracking
+        from quad_tracking_env import IdealQuadTracking, QuadTracking
+        environment = IdealQuadTracking if getattr(args, "ideal_velocity", False) else QuadTracking
     return Monitor(environment(args.world, instance, args.stage, rtf=args.rtf,
                                   penalize_clearance=args.clearance_penalty,
                                   clearance_threshold=args.clearance_threshold,
@@ -157,6 +160,21 @@ def train(args):
         config["reward"].update(distance_weight=VISIBLE_GAP_DISTANCE_WEIGHT, gap_scale_m=TOLERANCE,
                                 bearing_weight=VISIBLE_GAP_BEARING_WEIGHT, bearing_scale_deg=HORIZONTAL_FOV_HALF_DEG,
                                 lost=VISIBLE_GAP_LOST_REWARD)
+    elif args.tracking_reward == "valid-progress":
+        for term in ("distance_weight", "center_weight", "gap_scale", "in_band_bonus", "approach_weight", "lost"):
+            del config["reward"][term]
+        config["reward"].update(in_band=VALID_PROGRESS_IN_BAND_REWARD,
+                                visible_out_of_band=VALID_PROGRESS_VISIBLE_REWARD,
+                                lost=VALID_PROGRESS_LOST_REWARD,
+                                tolerance_m=TOLERANCE,
+                                center_penalty_weight=VALID_PROGRESS_CENTER_PENALTY_WEIGHT,
+                                center_penalty_full_deg=HORIZONTAL_FOV_HALF_DEG,
+                                distance_reward_weight=VALID_PROGRESS_DISTANCE_REWARD_WEIGHT,
+                                distance_reward_scale_m=VALID_PROGRESS_DISTANCE_REWARD_SCALE_M,
+                                potential_gap_weight=VALID_PROGRESS_GAP_WEIGHT,
+                                potential_gap_scale_m=VALID_PROGRESS_GAP_SCALE_M,
+                                potential_bearing_weight=VALID_PROGRESS_BEARING_WEIGHT,
+                                potential_bearing_scale_deg=180.0)
     elif args.tracking_reward in ("luo", "luo-progress"):
         for term in ("distance_weight", "center_weight", "gap_scale", "in_band_bonus", "lost"):
             del config["reward"][term]
@@ -201,6 +219,8 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--stage", choices=STAGES, default="A")
     parser.add_argument("--vehicle", choices=("car", "quad"), default="car")
+    parser.add_argument("--ideal-velocity", action="store_true",
+                        help="Integrate speed commands directly for quadrotor stage A.")
     parser.add_argument("--tracking-reward", choices=TRACKING_REWARDS, default="original")
     parser.add_argument("--luo-position-scale", type=float, default=LUO_POSITION_SCALE_M,
                         metavar="METRES", help="Position error scale in Luo et al.'s tracking reward.")
@@ -220,6 +240,8 @@ if __name__ == "__main__":
     parser.add_argument("--mirrored-pillar", nargs=2, type=float, metavar=("ABS_X", "Y"),
                         help="Pair each C1 route side with a mirrored pillar center.")
     args = parser.parse_args()
+    if args.ideal_velocity and (args.vehicle != "quad" or args.stage != "A"):
+        parser.error("--ideal-velocity requires --vehicle quad and --stage A")
     if args.tracking_reward == "visible-gap" and args.horizontal_fov_penalty:
         parser.error("visible-gap already includes a horizontal bearing penalty")
     if not math.isfinite(args.luo_position_scale) or args.luo_position_scale <= 0:

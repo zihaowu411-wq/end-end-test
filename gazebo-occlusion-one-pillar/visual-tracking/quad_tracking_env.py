@@ -6,7 +6,9 @@ import xml.etree.ElementTree as ET
 import numpy as np
 from gz.msgs10.twist_pb2 import Twist
 
-from tracking_env import CONTACT, GazeboTracking, HEIGHT, HORIZONTAL_FOV_HALF_RAD, PHYSICS_STEPS, WIDTH, write_world
+from tracking_env import (
+    CONTACT, CONTROL_HZ, DT, GazeboTracking, HEIGHT, HORIZONTAL_FOV_HALF_RAD, Pose, WIDTH, write_world,
+)
 
 
 ALTITUDE_M = 3.0
@@ -54,7 +56,13 @@ def x3_model(name, pose, color, source, demo):
         if plugin.find("commandSubTopic").text.endswith("/twist"):
             plugin.find("commandSubTopic").text = "cmd_vel"
             plugin.find("comLinkName").text = "chassis"
-            ET.SubElement(plugin, "maxLinearAcceleration").text = "2 2 2"
+            plugin.find("velocityGain").text = "5.4 5.4 2.7"
+            plugin.find("attitudeGain").text = "5 7.5 0.15"
+            plugin.find("angularRateGain").text = "0.70 0.90 0.18"
+            acceleration_limit = plugin.find("maximumLinearAcceleration")
+            if acceleration_limit is None:
+                acceleration_limit = ET.SubElement(plugin, "maximumLinearAcceleration")
+            acceleration_limit.text = "2.2 2.2 2"
         model.append(plugin)
     return model
 
@@ -67,6 +75,10 @@ class QuadTracking(GazeboTracking):
     collision_half_size = (0.25, 0.32)
     neutral_action = (-1.0, 0.0, 0.0)
     reset_attempts = 12
+    reset_linear_speed_mps = 0.05
+    reset_angular_speed_radps = 0.10
+    reset_stable_steps = 3
+    reset_settle_steps = 3 * CONTROL_HZ
 
     def build_world(self, template, output, rtf):
         tree = ET.parse(template)
@@ -101,21 +113,42 @@ class QuadTracking(GazeboTracking):
                     pillar_center=self.pillar_center)
 
     def settle_after_teleport(self):
-        # Refresh altitude commands after teleporting. A command based on the
-        # pre-teleport height would otherwise persist during stabilization.
+        # Take the first sample after teleporting so the pose reset is not
+        # interpreted as motion. Refresh altitude commands from this new pose.
         sample = self.advance()
-        for _ in range(8):
-            if all(abs(pose.z - self.spawn_z) <= 0.06 for pose in sample[:2]):
-                break
+        self._reset_motion_settled = False
+        stable_steps = 0
+        for _ in range(self.reset_settle_steps):
             self.drive(self.pursuer, 0.0, 0.0)
             self.drive(self.target, 0.0, 0.0)
-            sample = self.advance(4 * PHYSICS_STEPS)
-        self.drive(self.pursuer, 0.0, 0.0)
-        self.drive(self.target, 0.0, 0.0)
-        return self.advance(4 * PHYSICS_STEPS)
+            previous, previous_stamp = sample, self.sim_stamp
+            sample = self.advance()
+            dt = (self.sim_stamp - previous_stamp) / 1e9
+            if all(self._motion_settled(before, after, dt)
+                   for before, after in zip(previous[:2], sample[:2])):
+                stable_steps += 1
+                if stable_steps >= self.reset_stable_steps:
+                    self._reset_motion_settled = True
+                    break
+            else:
+                stable_steps = 0
+        return sample
+
+    def _motion_settled(self, before, after, dt):
+        displacement = math.hypot(after.x - before.x, after.y - before.y, after.z - before.z)
+        angle_change = math.hypot(
+            math.remainder(after.roll - before.roll, math.tau),
+            math.remainder(after.pitch - before.pitch, math.tau),
+            math.remainder(after.yaw - before.yaw, math.tau),
+        )
+        return (dt > 0.0 and abs(after.z - self.spawn_z) <= 0.06
+                and displacement <= self.reset_linear_speed_mps * dt
+                and angle_change <= self.reset_angular_speed_radps * dt)
 
     def settled(self, start, pose):
-        return math.hypot(start.x - pose.x, start.y - pose.y) <= 0.20 and abs(pose.z - self.spawn_z) <= 0.15
+        return (self._reset_motion_settled
+                and math.hypot(start.x - pose.x, start.y - pose.y) <= 0.20
+                and abs(pose.z - self.spawn_z) <= 0.15)
 
     def drive(self, publisher, v, yaw_rate, lateral=0.0):
         with self.condition:
@@ -160,3 +193,56 @@ class QuadTracking(GazeboTracking):
 
     def outside(self, pursuer):
         return super().outside(pursuer) or abs(pursuer.z - self.spawn_z) > 0.50
+
+
+class IdealQuadTracking(QuadTracking):
+    """Fixed-altitude kinematics with Gazebo RGB and contact sensing."""
+
+    def build_world(self, template, output, rtf):
+        if self.stage != "A":
+            raise ValueError("Ideal velocity mode requires quadrotor stage A")
+        super().build_world(template, output, rtf)
+        tree = ET.parse(output)
+        for name in ("pursuer", "target"):
+            model = tree.getroot().find(f"./world/model[@name='{name}']")
+            for plugin in model.findall("plugin"):
+                if "multicopter" in plugin.get("filename", ""):
+                    model.remove(plugin)
+            for link in model.findall("link"):
+                gravity = link.find("gravity")
+                if gravity is None:
+                    gravity = ET.SubElement(link, "gravity")
+                gravity.text = "false"
+            # Hold zero physical velocity between the poses set by the
+            # integration, including after contact and during reset.
+            ET.SubElement(model, "plugin", filename="gz-sim-velocity-control-system",
+                          name="gz::sim::systems::VelocityControl")
+        tree.write(output, encoding="utf-8", xml_declaration=True)
+
+    def drive(self, publisher, v, yaw_rate, lateral=0.0):
+        command = (float(v), float(lateral), float(yaw_rate))
+        if publisher is self.pursuer:
+            self.pursuer_velocity = command
+        else:
+            self.target_velocity = command
+
+    @staticmethod
+    def integrate_pose(pose, command):
+        forward, lateral, yaw_rate = command
+        half_turn = yaw_rate * DT / 2
+        # Integrate a constant body-frame velocity through the whole turn.
+        scale = DT * math.sin(half_turn) / half_turn if half_turn else DT
+        c, s = math.cos(pose.yaw + half_turn), math.sin(pose.yaw + half_turn)
+        return Pose(
+            x=pose.x + scale * (c * forward - s * lateral),
+            y=pose.y + scale * (s * forward + c * lateral),
+            yaw=math.remainder(pose.yaw + 2 * half_turn, math.tau),
+            z=ALTITUDE_M,
+        )
+
+    def advance_motion(self):
+        with self.condition:
+            _, pursuer, target = self.poses[-1]
+        self._teleport(self.integrate_pose(pursuer, self.pursuer_velocity),
+                       self.integrate_pose(target, self.target_velocity))
+        return self.advance()

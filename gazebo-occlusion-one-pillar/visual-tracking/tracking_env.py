@@ -23,6 +23,7 @@ from gz.msgs10.world_control_pb2 import WorldControl
 from gz.transport13 import Node
 
 CONTROL_HZ = CAMERA_HZ = 20
+GAMMA = 0.99 ** (6 / CONTROL_HZ)
 DT = 1 / CONTROL_HZ
 STEP_NS = 2_000_000
 PERIOD_NS = 1_000_000_000 // CONTROL_HZ
@@ -48,7 +49,16 @@ LUO_HEADING_WEIGHT = 0.1
 VISIBLE_GAP_DISTANCE_WEIGHT = 0.60
 VISIBLE_GAP_BEARING_WEIGHT = 0.15
 VISIBLE_GAP_LOST_REWARD = -0.50
-TRACKING_REWARDS = ("original", "luo", "luo-progress", "visible-gap")
+VALID_PROGRESS_IN_BAND_REWARD = 1.0
+VALID_PROGRESS_VISIBLE_REWARD = 0.10
+VALID_PROGRESS_LOST_REWARD = -0.35
+VALID_PROGRESS_GAP_WEIGHT = 4.0
+VALID_PROGRESS_GAP_SCALE_M = 3.0
+VALID_PROGRESS_BEARING_WEIGHT = 2.0
+VALID_PROGRESS_CENTER_PENALTY_WEIGHT = 0.25
+VALID_PROGRESS_DISTANCE_REWARD_WEIGHT = 0.30
+VALID_PROGRESS_DISTANCE_REWARD_SCALE_M = 0.95
+TRACKING_REWARDS = ("original", "luo", "luo-progress", "visible-gap", "valid-progress")
 COLLISION_PENALTY = 5.0
 CLEARANCE_THRESHOLD_M = 0.50
 MAX_CLEARANCE_PENALTY = 0.18
@@ -111,6 +121,29 @@ def visible_gap_reward(visible, distance, bearing):
     gap_error = abs(distance - GOAL)
     gap_cost = VISIBLE_GAP_DISTANCE_WEIGHT * gap_error / (gap_error + TOLERANCE)
     return 1.0 - gap_cost - bearing_cost
+
+
+def valid_progress_potential(info):
+    gap_error = min(abs(info["distance"] - GOAL) / VALID_PROGRESS_GAP_SCALE_M, 1.0)
+    bearing_error = abs(info["bearing"]) / math.pi
+    return -(VALID_PROGRESS_GAP_WEIGHT * gap_error + VALID_PROGRESS_BEARING_WEIGHT * bearing_error)
+
+
+def valid_progress_reward(info, previous_potential, terminated):
+    if info["valid"] and not terminated:
+        base = VALID_PROGRESS_IN_BAND_REWARD
+    elif info["visible"]:
+        base = VALID_PROGRESS_VISIBLE_REWARD
+    else:
+        base = VALID_PROGRESS_LOST_REWARD
+    # SB3 bootstraps time limits. Only a true terminal transition has zero potential.
+    potential = 0.0 if terminated else valid_progress_potential(info)
+    center_error = min(abs(info["bearing"]) / HORIZONTAL_FOV_HALF_RAD, 1.0)
+    center_penalty = VALID_PROGRESS_CENTER_PENALTY_WEIGHT * center_error
+    scaled_gap_error = (info["distance"] - GOAL) / VALID_PROGRESS_DISTANCE_REWARD_SCALE_M
+    distance_reward = VALID_PROGRESS_DISTANCE_REWARD_WEIGHT * math.exp(-0.5 * scaled_gap_error ** 2)
+    reward = base + distance_reward - center_penalty
+    return reward + GAMMA * potential - previous_potential, potential
 
 
 def blocked_by_pillar(x1, y1, x2, y2, center=(0.0, 0.0)):
@@ -418,6 +451,8 @@ class GazeboTracking(gym.Env):
             raise RuntimeError(f"Vehicles failed to settle at reset: {start} → {pursuer}, {target} → {target_pose}")
         info = self.measure(pursuer, target_pose, False)
         self.previous_gap_error = abs(info["distance"] - GOAL) if info["visible"] else None
+        if self.tracking_reward == "valid-progress":
+            self.previous_potential = valid_progress_potential(info)
         return self.observation(), info
 
     def settle_after_teleport(self):
@@ -467,20 +502,26 @@ class GazeboTracking(gym.Env):
     def outside(self, pursuer):
         return abs(pursuer.x) > 12.15 or abs(pursuer.y) > 8.65
 
+    def advance_motion(self):
+        return self.advance()
+
     def step(self, action):
         action = np.asarray(action, dtype=np.float32).clip(-1, 1)
         target_v, target_w = self.target_command()
         self.drive(self.target, target_v, target_w)
         command = self.pursuer_command(action)
-        pursuer, target, collided = self.advance()
+        pursuer, target, collided = self.advance_motion()
         self.elapsed += 1
         info = self.measure(pursuer, target, collided)
         info.update(command, target_speed=target_v)
+        failed = collided or self.outside(pursuer)
         gap_error = abs(info["distance"] - GOAL) if info["visible"] else None
         if self.tracking_reward in ("luo", "luo-progress"):
             reward = luo_tracking_reward(pursuer, target, self.luo_position_scale_m)
         elif self.tracking_reward == "visible-gap":
             reward = visible_gap_reward(info["visible"], info["distance"], info["bearing"])
+        elif self.tracking_reward == "valid-progress":
+            reward, self.previous_potential = valid_progress_reward(info, self.previous_potential, failed)
         elif gap_error is not None:
             # Keep a gradient at large errors, where a narrow Gaussian saturates.
             gap_score = 1.0 - min(gap_error / GAP_SCALE, 3.0)
@@ -504,7 +545,6 @@ class GazeboTracking(gym.Env):
         if self.stage == "A":
             reward -= 0.12 * (float(command["omega"]) / 1.5) ** 2
         self.previous_action = action
-        failed = collided or self.outside(pursuer)
         # Keep the size of rewards per simulated second comparable to the 6 Hz run.
         reward *= 6 / CONTROL_HZ
         if self.stage in PILLAR_STAGES:
