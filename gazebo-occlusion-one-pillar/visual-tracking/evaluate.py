@@ -11,7 +11,8 @@ import torch
 
 from tracking_env import (
     APPROACH_WEIGHT, CAMERA_HZ, CONTROL_HZ, GOAL, LUO_POSITION_SCALE_M, PILLAR_STAGES, STAGES, TOLERANCE,
-    HEIGHT, TRACKING_REWARDS, WIDTH, GazeboTracking,
+    CLEARANCE_THRESHOLD_M, HEIGHT, IDEAL_VELOCITY_STAGES, MAX_CLEARANCE_PENALTY, TRACKING_REWARDS, WIDTH,
+    GazeboTracking,
 )
 
 
@@ -24,7 +25,8 @@ def evaluate(args):
     if args.vehicle == "quad":
         from quad_tracking_env import IdealQuadTracking, QuadTracking
         quad_environment = IdealQuadTracking if getattr(args, "ideal_velocity", False) else QuadTracking
-        environment = partial(quad_environment, cube_target=getattr(args, "cube_target", False))
+        environment = partial(quad_environment, cube_target=getattr(args, "cube_target", False),
+                              target_visual_scale=getattr(args, "target_visual_scale", 1.0))
     policy = None if args.constant_speed is not None else RecurrentPPO.load(args.model, device="cpu")
     camera_resolution = (WIDTH, HEIGHT)
     if policy is not None:
@@ -32,6 +34,8 @@ def evaluate(args):
         camera_resolution = (width, height)
     env = environment(args.world, output / "sim", args.stage, record=args.video, rtf=args.rtf,
                          penalize_clearance=args.clearance_penalty, remove_pillar=args.remove_pillar,
+                         clearance_threshold=args.clearance_threshold,
+                         max_clearance_penalty=args.max_clearance_penalty,
                          pillar_center=tuple(args.pillar_center), tracking_reward=args.tracking_reward,
                          luo_position_scale_m=args.luo_position_scale,
                          penalize_horizontal_fov=args.horizontal_fov_penalty,
@@ -106,6 +110,7 @@ def evaluate(args):
             vehicle=args.vehicle, ideal_velocity=getattr(args, "ideal_velocity", False),
             stage=args.stage, model=str(args.model), episodes=len(episodes), target_gap_m=GOAL,
             tracking_reward=args.tracking_reward, cube_target=getattr(args, "cube_target", False),
+            target_visual_scale=getattr(args, "target_visual_scale", 1.0),
             horizontal_fov_penalty=args.horizontal_fov_penalty,
             blank_rgb=args.blank_rgb,
             constant_speed_mps=args.constant_speed,
@@ -128,6 +133,9 @@ def evaluate(args):
                           gap_restored=len(restored_gap),
                           mean_gap_recovery_s=float(np.mean(restored_gap)) if restored_gap else None)
             report["clearance_penalty_enabled"] = args.clearance_penalty
+            if args.clearance_penalty:
+                report["clearance_threshold_m"] = args.clearance_threshold
+                report["max_clearance_penalty"] = args.max_clearance_penalty
             report["mean_episode_minimum_clearance_m"] = float(np.mean([
                 min(row["pillar_clearance_m"] for row in trace if row["seed"] == episode["seed"])
                 for episode in episodes
@@ -169,8 +177,10 @@ if __name__ == "__main__":
     parser.add_argument("--vehicle", choices=("car", "quad"), default="car")
     parser.add_argument("--cube-target", action="store_true",
                         help="Render the quadrotor target as a red cube.")
+    parser.add_argument("--target-visual-scale", type=float, default=1.0,
+                        help="Uniformly scale the red X3 target visuals around the model origin.")
     parser.add_argument("--ideal-velocity", action="store_true",
-                        help="Integrate speed commands directly for quadrotor stage A.")
+                        help="Integrate speed commands directly for quadrotor stages A, B, and C1.")
     parser.add_argument("--tracking-reward", choices=TRACKING_REWARDS, default="original")
     parser.add_argument("--luo-position-scale", type=float, default=LUO_POSITION_SCALE_M,
                         metavar="METRES", help="Position error scale in Luo et al.'s tracking reward.")
@@ -183,6 +193,8 @@ if __name__ == "__main__":
     parser.add_argument("--video", action="store_true")
     parser.add_argument("--blank-rgb", action="store_true", help="Check policy behavior with camera pixels masked.")
     parser.add_argument("--clearance-penalty", action="store_true")
+    parser.add_argument("--clearance-threshold", type=float, default=CLEARANCE_THRESHOLD_M)
+    parser.add_argument("--max-clearance-penalty", type=float, default=MAX_CLEARANCE_PENALTY)
     parser.add_argument("--remove-pillar", action="store_true",
                         help="Keep C1 routes and measure clearance against the original pillar footprint.")
     parser.add_argument("--pillar-center", nargs=2, type=float, metavar=("X", "Y"), default=(0.0, 0.0),
@@ -190,8 +202,12 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.cube_target and args.vehicle != "quad":
         parser.error("--cube-target requires --vehicle quad")
-    if args.ideal_velocity and (args.vehicle != "quad" or args.stage != "A"):
-        parser.error("--ideal-velocity requires --vehicle quad and --stage A")
+    if not math.isfinite(args.target_visual_scale) or args.target_visual_scale <= 0:
+        parser.error("--target-visual-scale must be finite and positive")
+    if args.target_visual_scale != 1.0 and (args.vehicle != "quad" or args.cube_target):
+        parser.error("--target-visual-scale requires an X3 quadrotor target")
+    if args.ideal_velocity and (args.vehicle != "quad" or args.stage not in IDEAL_VELOCITY_STAGES):
+        parser.error("--ideal-velocity requires --vehicle quad and --stage A, B, or C1")
     if args.tracking_reward == "visible-gap" and args.horizontal_fov_penalty:
         parser.error("visible-gap already includes a horizontal bearing penalty")
     if not math.isfinite(args.luo_position_scale) or args.luo_position_scale <= 0:
@@ -204,6 +220,10 @@ if __name__ == "__main__":
         parser.error("--blank-rgb requires --model")
     if args.clearance_penalty and args.stage not in PILLAR_STAGES:
         parser.error("--clearance-penalty requires a stage with a pillar")
+    if not math.isfinite(args.clearance_threshold) or args.clearance_threshold <= 0:
+        parser.error("--clearance-threshold must be finite and positive")
+    if not math.isfinite(args.max_clearance_penalty) or args.max_clearance_penalty < 0:
+        parser.error("--max-clearance-penalty must be finite and nonnegative")
     if args.remove_pillar and (args.stage != "C1" or args.clearance_penalty):
         parser.error("--remove-pillar requires stage C1 with the clearance penalty disabled")
     if not all(map(math.isfinite, args.pillar_center)):

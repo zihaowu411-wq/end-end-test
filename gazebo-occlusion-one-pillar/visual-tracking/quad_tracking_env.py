@@ -7,7 +7,7 @@ import numpy as np
 from gz.msgs10.twist_pb2 import Twist
 
 from tracking_env import (
-    CONTACT, CONTROL_HZ, DT, GazeboTracking, HORIZONTAL_FOV_HALF_RAD, Pose, write_world,
+    CONTACT, CONTROL_HZ, DT, GazeboTracking, HORIZONTAL_FOV_HALF_RAD, IDEAL_VELOCITY_STAGES, Pose, write_world,
 )
 
 
@@ -35,7 +35,26 @@ def set_visual_color(visual, color):
     ET.SubElement(material, "diffuse").text = color
 
 
-def x3_model(name, pose, color, source, demo, *, cube_visual=False):
+def scale_x3_visuals(model, chassis, scale):
+    # The X3 asset's link frames are aligned with the chassis in the nominal pose.
+    for link in model.findall("link"):
+        origin = tuple(map(float, link.findtext("pose").split()[:3]))
+        for visual in link.findall("visual"):
+            pose = visual.find("pose")
+            values = pose.text.split()
+            position = [f"{scale * (offset + float(value)):.9g}"
+                        for offset, value in zip(origin, values[:3])]
+            pose.text = " ".join(position + values[3:])
+            dimensions = visual.find("geometry/mesh/scale")
+            if dimensions is None:
+                dimensions = visual.find("geometry/box/size")
+            dimensions.text = " ".join(f"{scale * float(value):.9g}" for value in dimensions.text.split())
+            if link is not chassis:
+                link.remove(visual)
+                chassis.append(visual)
+
+
+def x3_model(name, pose, color, source, demo, *, cube_visual=False, visual_scale=1.0):
     model = deepcopy(source)
     model.set("name", name)
     model.find("pose").text = pose
@@ -63,6 +82,8 @@ def x3_model(name, pose, color, source, demo, *, cube_visual=False):
             for visual in model.findall("link/visual"):
                 set_visual_color(visual, color)
         add_box_visual(base, "tracking_color", "0 0 0.065 0 0 0", "0.32 0.24 0.055", color)
+        if visual_scale != 1.0:
+            scale_x3_visuals(model, base, visual_scale)
     for plugin in demo.findall("plugin"):
         if "multicopter" not in plugin.get("filename", ""):
             continue
@@ -98,8 +119,9 @@ class QuadTracking(GazeboTracking):
     reset_stable_steps = 3
     reset_settle_steps = 3 * CONTROL_HZ
 
-    def __init__(self, *args, cube_target=False, **kwargs):
+    def __init__(self, *args, cube_target=False, target_visual_scale=1.0, **kwargs):
         self.cube_target = cube_target
+        self.target_visual_scale = target_visual_scale
         super().__init__(*args, **kwargs)
 
     def build_world(self, template, output, rtf):
@@ -116,7 +138,8 @@ class QuadTracking(GazeboTracking):
             values = old.find("pose").text.split()
             values[2] = str(self.spawn_z)
             model = x3_model(name, " ".join(values), color, source, demo,
-                             cube_visual=name == "target" and self.cube_target)
+                             cube_visual=name == "target" and self.cube_target,
+                             visual_scale=self.target_visual_scale if name == "target" else 1.0)
             if name == "pursuer":
                 camera = deepcopy(old.find("link/sensor[@name='front_rgb']"))
                 camera.find("pose").text = f"{self.camera_x} 0 0 0 0 0"
@@ -223,8 +246,8 @@ class IdealQuadTracking(QuadTracking):
     """Fixed-altitude kinematics with Gazebo RGB and contact sensing."""
 
     def build_world(self, template, output, rtf):
-        if self.stage != "A":
-            raise ValueError("Ideal velocity mode requires quadrotor stage A")
+        if self.stage not in IDEAL_VELOCITY_STAGES:
+            raise ValueError("Ideal velocity mode requires quadrotor stage A, B, or C1")
         super().build_world(template, output, rtf)
         tree = ET.parse(output)
         for name in ("pursuer", "target"):

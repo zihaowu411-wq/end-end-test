@@ -18,7 +18,7 @@ from torch import nn
 from tracking_env import (
     APPROACH_WEIGHT, CAMERA_HZ, CENTER_WEIGHT, CLEARANCE_THRESHOLD_M,
     COLLISION_PENALTY, CONTROL_HZ, DISTANCE_WEIGHT, FOV_MAX_PENALTY, FOV_PENALTY_START_DEG,
-    GAMMA, GAP_SCALE, GOAL, HEIGHT, HORIZONTAL_FOV_HALF_DEG,
+    GAMMA, GAP_SCALE, GOAL, HEIGHT, HORIZONTAL_FOV_HALF_DEG, IDEAL_VELOCITY_STAGES,
     IN_BAND_BONUS, LEGACY_CAR_ACTION_CHANGE_WEIGHT, LEGACY_CAR_DISTANCE_SCALE_M,
     LEGACY_CAR_LOST_REWARD, LEGACY_CAR_WEIGHTS,
     LOST_REWARD, LUO_HEADING_WEIGHT, LUO_POSITION_SCALE_M, LUO_REWARD_BASE,
@@ -124,7 +124,8 @@ def make_env(args, directory, index):
     if args.vehicle == "quad":
         from quad_tracking_env import IdealQuadTracking, QuadTracking
         quad_environment = IdealQuadTracking if getattr(args, "ideal_velocity", False) else QuadTracking
-        environment = partial(quad_environment, cube_target=getattr(args, "cube_target", False))
+        environment = partial(quad_environment, cube_target=getattr(args, "cube_target", False),
+                              target_visual_scale=getattr(args, "target_visual_scale", 1.0))
     return Monitor(environment(args.world, instance, args.stage, rtf=args.rtf,
                                   penalize_clearance=args.clearance_penalty,
                                   clearance_threshold=args.clearance_threshold,
@@ -237,8 +238,10 @@ if __name__ == "__main__":
     parser.add_argument("--vehicle", choices=("car", "quad"), default="car")
     parser.add_argument("--cube-target", action="store_true",
                         help="Render the quadrotor target as a red cube.")
+    parser.add_argument("--target-visual-scale", type=float, default=1.0,
+                        help="Uniformly scale the red X3 target visuals around the model origin.")
     parser.add_argument("--ideal-velocity", action="store_true",
-                        help="Integrate speed commands directly for quadrotor stage A.")
+                        help="Integrate speed commands directly for quadrotor stages A, B, and C1.")
     parser.add_argument("--tracking-reward", choices=TRACKING_REWARDS,
                         help="Defaults to legacy-car in ideal-velocity mode and original otherwise.")
     parser.add_argument("--luo-position-scale", type=float, default=LUO_POSITION_SCALE_M,
@@ -263,8 +266,12 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.cube_target and args.vehicle != "quad":
         parser.error("--cube-target requires --vehicle quad")
-    if args.ideal_velocity and (args.vehicle != "quad" or args.stage != "A"):
-        parser.error("--ideal-velocity requires --vehicle quad and --stage A")
+    if not math.isfinite(args.target_visual_scale) or args.target_visual_scale <= 0:
+        parser.error("--target-visual-scale must be finite and positive")
+    if args.target_visual_scale != 1.0 and (args.vehicle != "quad" or args.cube_target):
+        parser.error("--target-visual-scale requires an X3 quadrotor target")
+    if args.ideal_velocity and (args.vehicle != "quad" or args.stage not in IDEAL_VELOCITY_STAGES):
+        parser.error("--ideal-velocity requires --vehicle quad and --stage A, B, or C1")
     if args.tracking_reward is None:
         args.tracking_reward = "legacy-car" if args.ideal_velocity else "original"
     if args.tracking_reward == "visible-gap" and args.horizontal_fov_penalty:
