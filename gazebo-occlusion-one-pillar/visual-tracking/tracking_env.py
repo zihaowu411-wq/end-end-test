@@ -62,6 +62,8 @@ LEGACY_CAR_DISTANCE_SCALE_M = 0.95
 LEGACY_CAR_WEIGHTS = {
     "legacy-car": (0.70, 0.30),
     "legacy-car-85": (0.85, 0.15),
+    "legacy-car-unweighted": (1.0, 1.0),
+    "legacy-car-balanced": (0.50, 0.50),
 }
 LEGACY_CAR_LOST_REWARD = -0.35
 LEGACY_CAR_ACTION_CHANGE_WEIGHT = 0.025
