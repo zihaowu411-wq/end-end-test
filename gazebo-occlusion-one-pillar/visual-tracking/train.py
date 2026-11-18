@@ -15,6 +15,7 @@ from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from torch import nn
 
+from c1_reward import C1_REWARD_PROFILES
 from tracking_env import (
     APPROACH_WEIGHT, CAMERA_HZ, CENTER_WEIGHT, CLEARANCE_THRESHOLD_M,
     COLLISION_PENALTY, CONTROL_HZ, DISTANCE_WEIGHT, FOV_MAX_PENALTY, FOV_PENALTY_START_DEG,
@@ -44,6 +45,15 @@ class FollowingCNN(BaseFeaturesExtractor):
             nn.AdaptiveAvgPool2d((4, 8)),
             nn.Flatten(), nn.Linear(32 * 4 * 8, features_dim), nn.ReLU(),
         )
+
+    def forward(self, observation):
+        return self.network(observation)
+
+
+class FollowingState(BaseFeaturesExtractor):
+    def __init__(self, observation_space, features_dim=96):
+        super().__init__(observation_space, features_dim)
+        self.network = nn.Sequential(nn.Linear(observation_space.shape[0], features_dim), nn.ReLU())
 
     def forward(self, observation):
         return self.network(observation)
@@ -122,8 +132,10 @@ def make_env(args, directory, index):
     pillar_x, pillar_y = args.mirrored_pillar or (0.0, 0.0)
     environment = GazeboTracking
     if args.vehicle == "quad":
-        from quad_tracking_env import IdealQuadTracking, QuadTracking
+        from quad_tracking_env import IdealQuadTracking, QuadTracking, TruthQuadTracking
         quad_environment = IdealQuadTracking if getattr(args, "ideal_velocity", False) else QuadTracking
+        if args.observation == "truth":
+            quad_environment = TruthQuadTracking
         environment = partial(quad_environment, cube_target=getattr(args, "cube_target", False),
                               target_visual_scale=getattr(args, "target_visual_scale", 1.0))
     return Monitor(environment(args.world, instance, args.stage, rtf=args.rtf,
@@ -203,6 +215,15 @@ def train(args):
         config["reward"].update(fov_penalty_start_deg=FOV_PENALTY_START_DEG,
                                 fov_penalty_full_deg=HORIZONTAL_FOV_HALF_DEG,
                                 fov_max_penalty=FOV_MAX_PENALTY)
+    if args.tracking_reward in C1_REWARD_PROFILES:
+        settings = C1_REWARD_PROFILES[args.tracking_reward]
+        config.update(clearance_penalty=True,
+                      clearance_threshold=settings["clearance_threshold_m"],
+                      max_clearance_penalty=settings["max_clearance_penalty"],
+                      reward=dict(settings))
+    if args.observation == "truth":
+        from quad_tracking_env import TruthQuadTracking
+        config["observation_fields"] = TruthQuadTracking.fields
     (directory / "config.json").write_text(json.dumps(config, indent=2) + "\n")
     factories = [partial(make_env, args, directory, index) for index in range(args.environments)]
     env = DummyVecEnv(factories) if args.environments == 1 else SubprocVecEnv(factories, start_method="spawn")
@@ -215,10 +236,11 @@ def train(args):
                                      tensorboard_log=str(directory / "tensorboard"))
         else:
             model = RecurrentPPO(
-                "CnnLstmPolicy", env, n_steps=args.rollout_steps, batch_size=64, n_epochs=5,
+                ("MlpLstmPolicy" if args.observation == "truth" else "CnnLstmPolicy"), env, n_steps=args.rollout_steps, batch_size=64, n_epochs=5,
                 learning_rate=args.learning_rate,
                 gamma=GAMMA, gae_lambda=GAE_LAMBDA, clip_range=0.2, ent_coef=0.005, target_kl=0.035,
-                policy_kwargs=dict(features_extractor_class=FollowingCNN, lstm_hidden_size=96,
+                policy_kwargs=dict(features_extractor_class=(FollowingState if args.observation == "truth" else FollowingCNN),
+                                   lstm_hidden_size=96,
                                    net_arch=dict(pi=[64], vf=[64]), log_std_init=-1.15),
                 verbose=1, device=args.device, seed=args.seed,
                 tensorboard_log=str(directory / "tensorboard"),
@@ -250,6 +272,7 @@ if __name__ == "__main__":
                         help="Penalize the target approaching or crossing the horizontal edge of the camera.")
     parser.add_argument("--camera-resolution", nargs=2, type=int, metavar=("WIDTH", "HEIGHT"),
                         default=(WIDTH, HEIGHT), help="Onboard RGB image size in pixels.")
+    parser.add_argument("--observation", choices=("rgb", "truth"), default="rgb")
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--steps", type=int, default=12288)
     parser.add_argument("--rtf", type=float, default=12)
@@ -272,8 +295,12 @@ if __name__ == "__main__":
         parser.error("--target-visual-scale requires an X3 quadrotor target")
     if args.ideal_velocity and (args.vehicle != "quad" or args.stage not in IDEAL_VELOCITY_STAGES):
         parser.error("--ideal-velocity requires --vehicle quad and --stage A, B, or C1")
+    if args.observation == "truth" and not args.ideal_velocity:
+        parser.error("--observation truth requires --ideal-velocity")
     if args.tracking_reward is None:
         args.tracking_reward = "legacy-car" if args.ideal_velocity else "original"
+    if args.tracking_reward in C1_REWARD_PROFILES and (args.stage != "C1" or args.horizontal_fov_penalty):
+        parser.error("C1 bypass rewards require C1 without a separate FOV penalty")
     if args.tracking_reward == "visible-gap" and args.horizontal_fov_penalty:
         parser.error("visible-gap already includes a horizontal bearing penalty")
     if not math.isfinite(args.luo_position_scale) or args.luo_position_scale <= 0:

@@ -3,11 +3,13 @@ import math
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
+from gymnasium import spaces
 import numpy as np
 from gz.msgs10.twist_pb2 import Twist
 
 from tracking_env import (
-    CONTACT, CONTROL_HZ, DT, GazeboTracking, HORIZONTAL_FOV_HALF_RAD, IDEAL_VELOCITY_STAGES, Pose, write_world,
+    CONTACT, CONTROL_HZ, DT, GazeboTracking, HORIZONTAL_FOV_HALF_RAD, IDEAL_VELOCITY_STAGES,
+    Pose, pillar_clearance, write_world,
 )
 
 
@@ -293,3 +295,40 @@ class IdealQuadTracking(QuadTracking):
         self._teleport(self.integrate_pose(pursuer, self.pursuer_velocity),
                        self.integrate_pose(target, self.target_velocity))
         return self.advance()
+
+
+
+class TruthQuadTracking(IdealQuadTracking):
+    """Use measured simulator state in place of the policy's camera input."""
+
+    fields = (
+        "target_forward_m", "target_left_m", "target_relative_yaw_sin", "target_relative_yaw_cos",
+        "pillar_forward_m", "pillar_left_m", "pillar_clearance_m", "pillar_present",
+        "pursuer_yaw_sin", "pursuer_yaw_cos", "target_visible",
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.observation_space = spaces.Box(-np.inf, np.inf, shape=(len(self.fields),), dtype=np.float32)
+
+    def measure(self, pursuer, target, collided):
+        info = super().measure(pursuer, target, collided)
+        cos_yaw, sin_yaw = math.cos(pursuer.yaw), math.sin(pursuer.yaw)
+
+        def relative(x, y):
+            dx, dy = x - pursuer.x, y - pursuer.y
+            return cos_yaw * dx + sin_yaw * dy, -sin_yaw * dx + cos_yaw * dy
+
+        yaw_error = target.yaw - pursuer.yaw
+        has_pillar = self.stage == "C1" and not self.remove_pillar
+        pillar_xy = relative(*self.pillar_center) if has_pillar else (0.0, 0.0)
+        clearance = pillar_clearance(pursuer, self.pillar_center, self.collision_half_size) if has_pillar else 0.0
+        self.truth_observation = np.asarray(
+            (*relative(target.x, target.y), math.sin(yaw_error), math.cos(yaw_error),
+             *pillar_xy, clearance, float(has_pillar), sin_yaw, cos_yaw, float(info["visible"])),
+            dtype=np.float32,
+        )
+        return info
+
+    def observation(self):
+        return self.truth_observation
