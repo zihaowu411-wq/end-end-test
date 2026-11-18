@@ -15,20 +15,20 @@ from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from torch import nn
 
-from c1_reward import C1_REWARD_PROFILES
 from tracking_env import (
-    APPROACH_WEIGHT, CAMERA_HZ, CENTER_WEIGHT, CLEARANCE_THRESHOLD_M,
+    APPROACH_WEIGHT, CAMERA_HZ, CENTER_WEIGHT,
     COLLISION_PENALTY, CONTROL_HZ, DISTANCE_WEIGHT, FOV_MAX_PENALTY, FOV_PENALTY_START_DEG,
     GAMMA, GAP_SCALE, GOAL, HEIGHT, HORIZONTAL_FOV_HALF_DEG, IDEAL_VELOCITY_STAGES,
     IN_BAND_BONUS, LEGACY_CAR_ACTION_CHANGE_WEIGHT, LEGACY_CAR_DISTANCE_SCALE_M,
     LEGACY_CAR_LOST_REWARD, LEGACY_CAR_WEIGHTS,
     LOST_REWARD, LUO_HEADING_WEIGHT, LUO_POSITION_SCALE_M, LUO_REWARD_BASE,
-    MAX_CLEARANCE_PENALTY, PILLAR_STAGES, STAGES, TOLERANCE, TRACKING_REWARDS,
+    PILLAR_STAGES, STAGES, TOLERANCE, TRACKING_REWARDS,
     VALID_PROGRESS_BEARING_WEIGHT, VALID_PROGRESS_CENTER_PENALTY_WEIGHT,
     VALID_PROGRESS_DISTANCE_REWARD_SCALE_M, VALID_PROGRESS_DISTANCE_REWARD_WEIGHT,
     VALID_PROGRESS_GAP_SCALE_M, VALID_PROGRESS_GAP_WEIGHT,
     VALID_PROGRESS_IN_BAND_REWARD, VALID_PROGRESS_LOST_REWARD, VALID_PROGRESS_VISIBLE_REWARD,
     VISIBLE_GAP_BEARING_WEIGHT, VISIBLE_GAP_DISTANCE_WEIGHT, VISIBLE_GAP_LOST_REWARD, WIDTH, GazeboTracking,
+    clearance_settings,
 )
 
 
@@ -215,12 +215,6 @@ def train(args):
         config["reward"].update(fov_penalty_start_deg=FOV_PENALTY_START_DEG,
                                 fov_penalty_full_deg=HORIZONTAL_FOV_HALF_DEG,
                                 fov_max_penalty=FOV_MAX_PENALTY)
-    if args.tracking_reward in C1_REWARD_PROFILES:
-        settings = C1_REWARD_PROFILES[args.tracking_reward]
-        config.update(clearance_penalty=True,
-                      clearance_threshold=settings["clearance_threshold_m"],
-                      max_clearance_penalty=settings["max_clearance_penalty"],
-                      reward=dict(settings))
     if args.observation == "truth":
         from quad_tracking_env import TruthQuadTracking
         config["observation_fields"] = TruthQuadTracking.fields
@@ -265,7 +259,7 @@ if __name__ == "__main__":
     parser.add_argument("--ideal-velocity", action="store_true",
                         help="Integrate speed commands directly for quadrotor stages A, B, and C1.")
     parser.add_argument("--tracking-reward", choices=TRACKING_REWARDS,
-                        help="Defaults to legacy-car in ideal-velocity mode and original otherwise.")
+                        help="Defaults to legacy-car for quad C1 or ideal-velocity mode.")
     parser.add_argument("--luo-position-scale", type=float, default=LUO_POSITION_SCALE_M,
                         metavar="METRES", help="Position error scale in Luo et al.'s tracking reward.")
     parser.add_argument("--horizontal-fov-penalty", action="store_true",
@@ -282,8 +276,8 @@ if __name__ == "__main__":
     parser.add_argument("--learning-rate", type=float, default=0.0003)
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--clearance-penalty", action="store_true")
-    parser.add_argument("--clearance-threshold", type=float, default=CLEARANCE_THRESHOLD_M)
-    parser.add_argument("--max-clearance-penalty", type=float, default=MAX_CLEARANCE_PENALTY)
+    parser.add_argument("--clearance-threshold", type=float)
+    parser.add_argument("--max-clearance-penalty", type=float)
     parser.add_argument("--mirrored-pillar", nargs=2, type=float, metavar=("ABS_X", "Y"),
                         help="Pair each C1 route side with a mirrored pillar center.")
     args = parser.parse_args()
@@ -298,9 +292,12 @@ if __name__ == "__main__":
     if args.observation == "truth" and not args.ideal_velocity:
         parser.error("--observation truth requires --ideal-velocity")
     if args.tracking_reward is None:
-        args.tracking_reward = "legacy-car" if args.ideal_velocity else "original"
-    if args.tracking_reward in C1_REWARD_PROFILES and (args.stage != "C1" or args.horizontal_fov_penalty):
-        parser.error("C1 bypass rewards require C1 without a separate FOV penalty")
+        use_legacy = args.ideal_velocity or (args.stage == "C1" and args.vehicle == "quad")
+        args.tracking_reward = "legacy-car" if use_legacy else "original"
+    args.clearance_penalty, args.clearance_threshold, args.max_clearance_penalty = clearance_settings(
+        args.stage, args.tracking_reward, args.clearance_penalty,
+        args.clearance_threshold, args.max_clearance_penalty,
+    )
     if args.tracking_reward == "visible-gap" and args.horizontal_fov_penalty:
         parser.error("visible-gap already includes a horizontal bearing penalty")
     if not math.isfinite(args.luo_position_scale) or args.luo_position_scale <= 0:

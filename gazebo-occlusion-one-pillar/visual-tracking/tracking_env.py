@@ -22,8 +22,6 @@ from gz.msgs10.twist_pb2 import Twist
 from gz.msgs10.world_control_pb2 import WorldControl
 from gz.transport13 import Node
 
-from c1_reward import C1_REWARD_PROFILES, C1BypassRecovery
-
 CONTROL_HZ = CAMERA_HZ = 20
 GAMMA = 0.99 ** (6 / CONTROL_HZ)
 DT = 1 / CONTROL_HZ
@@ -39,6 +37,7 @@ FOV_MAX_PENALTY = 0.20
 GOAL = 3.0
 TOLERANCE = 0.5
 HORIZON = 12 * CONTROL_HZ
+C1_START_SETBACK_M = 2.0
 DISTANCE_WEIGHT = 0.85
 CENTER_WEIGHT = 0.15
 GAP_SCALE = 0.65
@@ -69,11 +68,12 @@ LEGACY_CAR_WEIGHTS = {
 }
 LEGACY_CAR_LOST_REWARD = -0.35
 LEGACY_CAR_ACTION_CHANGE_WEIGHT = 0.025
-TRACKING_REWARDS = ("original", "luo", "luo-progress", "visible-gap", "valid-progress", *C1_REWARD_PROFILES,
-                    *LEGACY_CAR_WEIGHTS)
+TRACKING_REWARDS = ("original", "luo", "luo-progress", "visible-gap", "valid-progress", *LEGACY_CAR_WEIGHTS)
 COLLISION_PENALTY = 5.0
 CLEARANCE_THRESHOLD_M = 0.50
 MAX_CLEARANCE_PENALTY = 0.18
+C1_LEGACY_CLEARANCE_THRESHOLD_M = 2.0
+C1_LEGACY_MAX_CLEARANCE_PENALTY = 0.8
 PILLAR_HALF_SIZE = (0.675, 0.725)
 CHASSIS_HALF_SIZE = (0.62, 0.315)
 IDEAL_VELOCITY_STAGES = ("A", "B", "C1")
@@ -216,6 +216,15 @@ def pillar_clearance(robot, center=(0.0, 0.0), body_half_size=CHASSIS_HALF_SIZE)
     return min(body_to_pillar, pillar_to_body)
 
 
+def clearance_settings(stage, tracking_reward, enabled, threshold, maximum, *, remove_pillar=False):
+    legacy_c1 = stage == "C1" and tracking_reward == "legacy-car" and not remove_pillar
+    if threshold is None:
+        threshold = C1_LEGACY_CLEARANCE_THRESHOLD_M if legacy_c1 else CLEARANCE_THRESHOLD_M
+    if maximum is None:
+        maximum = C1_LEGACY_MAX_CLEARANCE_PENALTY if legacy_c1 else MAX_CLEARANCE_PENALTY
+    return enabled or legacy_c1, threshold, maximum
+
+
 def clearance_penalty(distance, threshold=CLEARANCE_THRESHOLD_M, maximum=MAX_CLEARANCE_PENALTY):
     return maximum * max(0.0, 1.0 - distance / threshold)
 
@@ -271,8 +280,8 @@ class GazeboTracking(gym.Env):
     reset_attempts = 4
 
     def __init__(self, template, directory, stage="A", record=False, rtf=8, penalize_clearance=False,
-                 remove_pillar=False, pillar_center=(0.0, 0.0), clearance_threshold=CLEARANCE_THRESHOLD_M,
-                 fixed_route_side=None, max_clearance_penalty=MAX_CLEARANCE_PENALTY,
+                 remove_pillar=False, pillar_center=(0.0, 0.0), clearance_threshold=None,
+                 fixed_route_side=None, max_clearance_penalty=None,
                  tracking_reward="original", luo_position_scale_m=LUO_POSITION_SCALE_M,
                  penalize_horizontal_fov=False, camera_resolution=(WIDTH, HEIGHT)):
         super().__init__()
@@ -281,20 +290,14 @@ class GazeboTracking(gym.Env):
         self.observation_space = gym.spaces.Box(0, 255, shape=(3, height, width), dtype=np.uint8)
         self.action_space = gym.spaces.Box(-1.0, 1.0, shape=(len(self.neutral_action),), dtype=np.float32)
         self.stage, self.record = stage, record
-        self.penalize_clearance = penalize_clearance
+        self.penalize_clearance, self.clearance_threshold, self.max_clearance_penalty = clearance_settings(
+            stage, tracking_reward, penalize_clearance, clearance_threshold, max_clearance_penalty,
+            remove_pillar=remove_pillar,
+        )
         self.remove_pillar = remove_pillar
         self.pillar_center = pillar_center
-        self.clearance_threshold = clearance_threshold
-        self.max_clearance_penalty = max_clearance_penalty
         self.fixed_route_side = fixed_route_side
         self.tracking_reward = tracking_reward
-        if tracking_reward in C1_REWARD_PROFILES:
-            if stage != "C1" or remove_pillar or penalize_horizontal_fov:
-                raise ValueError("C1 bypass reward requires C1 with its pillar and without a separate FOV penalty")
-            self.penalize_clearance = True
-            settings = C1_REWARD_PROFILES[tracking_reward]
-            self.clearance_threshold = settings["clearance_threshold_m"]
-            self.max_clearance_penalty = settings["max_clearance_penalty"]
         self.luo_position_scale_m = luo_position_scale_m
         self.penalize_horizontal_fov = penalize_horizontal_fov
         self.directory = Path(directory).resolve()
@@ -460,10 +463,11 @@ class GazeboTracking(gym.Env):
             if self.route_side is None:
                 self.route_side = (1 if seed % 2 == 0 else -1) if seed is not None else int(rng.choice((-1, 1)))
             side = self.route_side
-            start = Pose(side * rng.uniform(0.20, 0.42), rng.uniform(-6.1, -5.7),
+            start = Pose(side * rng.uniform(0.20, 0.42), rng.uniform(-6.1, -5.7) - C1_START_SETBACK_M,
                          math.pi / 2 + side * rng.uniform(0.02, 0.06))
-            target = Pose(side * rng.uniform(1.30, 1.46), rng.uniform(-2.60, -2.35), math.pi / 2)
-            self.duration = 10 * CONTROL_HZ
+            target = Pose(side * rng.uniform(1.30, 1.46), rng.uniform(-2.60, -2.35) - C1_START_SETBACK_M,
+                          math.pi / 2)
+            self.duration = 13 * CONTROL_HZ
         elif self.stage == "C":
             start = Pose(rng.uniform(-3.8, -3.2), rng.uniform(-1.8, -1.4), rng.uniform(0.10, 0.24))
             target = Pose(rng.uniform(1.65, 1.95), rng.uniform(-2.6, -2.15), math.pi / 2)
@@ -484,11 +488,6 @@ class GazeboTracking(gym.Env):
         else:
             raise RuntimeError(f"Vehicles failed to settle at reset: {start} → {pursuer}, {target} → {target_pose}")
         info = self.measure(pursuer, target_pose, False)
-        if self.tracking_reward in C1_REWARD_PROFILES:
-            self.c1_reward = C1BypassRecovery(
-                pursuer, self.pillar_center, PILLAR_HALF_SIZE, self.collision_half_size, GOAL, GAMMA,
-                profile=self.tracking_reward,
-            )
         self.previous_gap_error = abs(info["distance"] - GOAL) if info["visible"] else None
         if self.tracking_reward == "valid-progress":
             self.previous_potential = valid_progress_potential(info)
@@ -554,15 +553,6 @@ class GazeboTracking(gym.Env):
         info = self.measure(pursuer, target, collided)
         info.update(command, target_speed=target_v)
         failed = collided or self.outside(pursuer)
-        if self.tracking_reward in C1_REWARD_PROFILES:
-            timed_out = self.elapsed >= self.duration
-            info["valid"] = info["valid"] and not failed
-            clearance = pillar_clearance(pursuer, self.pillar_center, self.collision_half_size)
-            action_change = float(np.mean(np.square(action - self.previous_action)))
-            reward = self.c1_reward.step(info, clearance, action_change, failed=failed, timed_out=timed_out)
-            self.previous_action = action
-            # C1's 10 s task horizon is terminal for both reward and value bootstrapping.
-            return self.observation(), float(reward), failed or timed_out, False, info
         gap_error = abs(info["distance"] - GOAL) if info["visible"] else None
         legacy_car_weights = LEGACY_CAR_WEIGHTS.get(self.tracking_reward)
         legacy_car = legacy_car_weights is not None

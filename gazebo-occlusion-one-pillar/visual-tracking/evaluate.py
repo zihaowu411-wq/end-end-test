@@ -9,11 +9,9 @@ import numpy as np
 from sb3_contrib import RecurrentPPO
 import torch
 
-from c1_reward import C1_REWARD_PROFILES
 from tracking_env import (
     APPROACH_WEIGHT, CAMERA_HZ, CONTROL_HZ, GOAL, LUO_POSITION_SCALE_M, PILLAR_STAGES, STAGES, TOLERANCE,
-    CLEARANCE_THRESHOLD_M, HEIGHT, IDEAL_VELOCITY_STAGES, MAX_CLEARANCE_PENALTY, TRACKING_REWARDS, WIDTH,
-    GazeboTracking,
+    HEIGHT, IDEAL_VELOCITY_STAGES, TRACKING_REWARDS, WIDTH, GazeboTracking, clearance_settings,
 )
 
 
@@ -186,7 +184,8 @@ if __name__ == "__main__":
                         help="Uniformly scale the red X3 target visuals around the model origin.")
     parser.add_argument("--ideal-velocity", action="store_true",
                         help="Integrate speed commands directly for quadrotor stages A, B, and C1.")
-    parser.add_argument("--tracking-reward", choices=TRACKING_REWARDS, default="original")
+    parser.add_argument("--tracking-reward", choices=TRACKING_REWARDS,
+                        help="Defaults to legacy-car for quad C1 and original otherwise.")
     parser.add_argument("--luo-position-scale", type=float, default=LUO_POSITION_SCALE_M,
                         metavar="METRES", help="Position error scale in Luo et al.'s tracking reward.")
     parser.add_argument("--horizontal-fov-penalty", action="store_true",
@@ -201,8 +200,8 @@ if __name__ == "__main__":
     parser.add_argument("--video", action="store_true")
     parser.add_argument("--blank-rgb", action="store_true", help="Check policy behavior with camera pixels masked.")
     parser.add_argument("--clearance-penalty", action="store_true")
-    parser.add_argument("--clearance-threshold", type=float, default=CLEARANCE_THRESHOLD_M)
-    parser.add_argument("--max-clearance-penalty", type=float, default=MAX_CLEARANCE_PENALTY)
+    parser.add_argument("--clearance-threshold", type=float)
+    parser.add_argument("--max-clearance-penalty", type=float)
     parser.add_argument("--remove-pillar", action="store_true",
                         help="Keep C1 routes and measure clearance against the original pillar footprint.")
     parser.add_argument("--pillar-center", nargs=2, type=float, metavar=("X", "Y"), default=(0.0, 0.0),
@@ -220,9 +219,13 @@ if __name__ == "__main__":
         parser.error("--target-visual-scale requires an X3 quadrotor target")
     if args.ideal_velocity and (args.vehicle != "quad" or args.stage not in IDEAL_VELOCITY_STAGES):
         parser.error("--ideal-velocity requires --vehicle quad and --stage A, B, or C1")
-    if args.tracking_reward in C1_REWARD_PROFILES and (
-            args.stage != "C1" or args.remove_pillar or args.horizontal_fov_penalty):
-        parser.error("C1 bypass rewards require C1 with its pillar and without a separate FOV penalty")
+    if args.tracking_reward is None:
+        args.tracking_reward = "legacy-car" if args.stage == "C1" and args.vehicle == "quad" else "original"
+    args.clearance_penalty, args.clearance_threshold, args.max_clearance_penalty = clearance_settings(
+        args.stage, args.tracking_reward, args.clearance_penalty,
+        args.clearance_threshold, args.max_clearance_penalty,
+        remove_pillar=args.remove_pillar,
+    )
     if args.tracking_reward == "visible-gap" and args.horizontal_fov_penalty:
         parser.error("visible-gap already includes a horizontal bearing penalty")
     if not math.isfinite(args.luo_position_scale) or args.luo_position_scale <= 0:
