@@ -74,6 +74,10 @@ CLEARANCE_THRESHOLD_M = 0.50
 MAX_CLEARANCE_PENALTY = 0.18
 C1_LEGACY_CLEARANCE_THRESHOLD_M = 2.0
 C1_LEGACY_MAX_CLEARANCE_PENALTY = 0.8
+C1_DETOUR_OUTER_PENALTY = 0.10
+C1_DETOUR_NEAR_PENALTY = 0.25
+C1_DETOUR_NEAR_FRACTION = 0.15
+C1_DETOUR_MAX_CLEARANCE_PENALTY = C1_DETOUR_OUTER_PENALTY + C1_DETOUR_NEAR_PENALTY
 PILLAR_HALF_SIZE = (0.675, 0.725)
 CHASSIS_HALF_SIZE = (0.62, 0.315)
 IDEAL_VELOCITY_STAGES = ("A", "B", "C1")
@@ -216,17 +220,30 @@ def pillar_clearance(robot, center=(0.0, 0.0), body_half_size=CHASSIS_HALF_SIZE)
     return min(body_to_pillar, pillar_to_body)
 
 
-def clearance_settings(stage, tracking_reward, enabled, threshold, maximum, *, remove_pillar=False):
+def clearance_settings(stage, tracking_reward, enabled, threshold, maximum, *,
+                       remove_pillar=False, c1_target_detour=False):
     legacy_c1 = stage == "C1" and tracking_reward == "legacy-car" and not remove_pillar
+    detour = stage == "C1" and c1_target_detour and not remove_pillar
     if threshold is None:
-        threshold = C1_LEGACY_CLEARANCE_THRESHOLD_M if legacy_c1 else CLEARANCE_THRESHOLD_M
+        threshold = C1_LEGACY_CLEARANCE_THRESHOLD_M if legacy_c1 or detour else CLEARANCE_THRESHOLD_M
     if maximum is None:
-        maximum = C1_LEGACY_MAX_CLEARANCE_PENALTY if legacy_c1 else MAX_CLEARANCE_PENALTY
-    return enabled or legacy_c1, threshold, maximum
+        if detour:
+            maximum = C1_DETOUR_MAX_CLEARANCE_PENALTY
+        else:
+            maximum = C1_LEGACY_MAX_CLEARANCE_PENALTY if legacy_c1 else MAX_CLEARANCE_PENALTY
+    return enabled or legacy_c1 or detour, threshold, maximum
 
 
-def clearance_penalty(distance, threshold=CLEARANCE_THRESHOLD_M, maximum=MAX_CLEARANCE_PENALTY):
-    return maximum * max(0.0, 1.0 - distance / threshold)
+def clearance_penalty(distance, threshold=CLEARANCE_THRESHOLD_M, maximum=MAX_CLEARANCE_PENALTY, *,
+                      c1_target_detour=False):
+    if not c1_target_detour:
+        return maximum * max(0.0, 1.0 - distance / threshold)
+
+    near_distance = threshold * C1_DETOUR_NEAR_FRACTION
+    outer = min(1.0, max(0.0, (threshold - distance) / (threshold - near_distance)))
+    near = min(1.0, max(0.0, (near_distance - distance) / near_distance))
+    penalty = C1_DETOUR_OUTER_PENALTY * outer**2 + C1_DETOUR_NEAR_PENALTY * near**2
+    return penalty * (maximum / C1_DETOUR_MAX_CLEARANCE_PENALTY)
 
 
 def write_world(template, output, stage, record, rtf, remove_pillar=False, pillar_center=(0.0, 0.0),
@@ -283,7 +300,8 @@ class GazeboTracking(gym.Env):
                  remove_pillar=False, pillar_center=(0.0, 0.0), clearance_threshold=None,
                  fixed_route_side=None, max_clearance_penalty=None,
                  tracking_reward="original", luo_position_scale_m=LUO_POSITION_SCALE_M,
-                 penalize_horizontal_fov=False, camera_resolution=(WIDTH, HEIGHT)):
+                 penalize_horizontal_fov=False, camera_resolution=(WIDTH, HEIGHT), c1_target_detour=False,
+                 b_weave=False):
         super().__init__()
         self.camera_resolution = tuple(camera_resolution)
         width, height = self.camera_resolution
@@ -292,11 +310,17 @@ class GazeboTracking(gym.Env):
         self.stage, self.record = stage, record
         self.penalize_clearance, self.clearance_threshold, self.max_clearance_penalty = clearance_settings(
             stage, tracking_reward, penalize_clearance, clearance_threshold, max_clearance_penalty,
-            remove_pillar=remove_pillar,
+            remove_pillar=remove_pillar, c1_target_detour=c1_target_detour,
         )
         self.remove_pillar = remove_pillar
         self.pillar_center = pillar_center
         self.fixed_route_side = fixed_route_side
+        if b_weave and stage != "B":
+            raise ValueError("The weaving target requires Stage B")
+        self.b_weave = b_weave
+        if c1_target_detour and stage != "C1":
+            raise ValueError("The target detour requires stage C1")
+        self.c1_target_detour = c1_target_detour
         self.tracking_reward = tracking_reward
         self.luo_position_scale_m = luo_position_scale_m
         self.penalize_horizontal_fov = penalize_horizontal_fov
@@ -465,7 +489,8 @@ class GazeboTracking(gym.Env):
             side = self.route_side
             start = Pose(side * rng.uniform(0.20, 0.42), rng.uniform(-6.1, -5.7) - C1_START_SETBACK_M,
                          math.pi / 2 + side * rng.uniform(0.02, 0.06))
-            target = Pose(side * rng.uniform(1.30, 1.46), rng.uniform(-2.60, -2.35) - C1_START_SETBACK_M,
+            target_lane = rng.uniform(0.40, 0.60) if self.c1_target_detour else rng.uniform(1.30, 1.46)
+            target = Pose(side * target_lane, rng.uniform(-2.60, -2.35) - C1_START_SETBACK_M,
                           math.pi / 2)
             self.duration = 13 * CONTROL_HZ
         elif self.stage == "C":
@@ -475,8 +500,19 @@ class GazeboTracking(gym.Env):
         else:
             x = rng.uniform(-6.0, -5.5)
             y = rng.uniform(-1.0, 1.0)
-            start = Pose(x, y, rng.uniform(-0.22, 0.22))
-            target = Pose(x + rng.uniform(2.1, 4.9), y + rng.uniform(-0.85, 0.85))
+            yaw = rng.uniform(-0.22, 0.22)
+            target_x = x + rng.uniform(2.1, 4.9)
+            target_y = y + rng.uniform(-0.85, 0.85)
+            if self.stage == "B" and self.fixed_route_side is not None:
+                side = self.fixed_route_side
+                y, yaw, target_y = side * y, side * yaw, side * target_y
+                self.turn = side * abs(self.turn)
+            start = Pose(x, y, yaw)
+            target = Pose(target_x, target_y)
+            if self.b_weave:
+                self.b_turn_start = int(rng.integers(25, 38))
+                self.b_turn_leg = int(rng.integers(40, 50))
+                self.turn = math.copysign(rng.uniform(0.17, 0.27), self.turn)
         for attempt in range(self.reset_attempts):
             self.drive(self.pursuer, 0, 0)
             self.drive(self.target, 0, 0)
@@ -501,8 +537,16 @@ class GazeboTracking(gym.Env):
 
     def target_command(self):
         section = min(self.elapsed // (3 * CONTROL_HZ), 3)
-        turn_starts = round((10 / 6) * CONTROL_HZ)
-        turn = self.turn if self.stage == "B" and turn_starts <= self.elapsed < 6 * CONTROL_HZ else 0.0
+        if self.b_weave:
+            time_in_weave = self.elapsed - self.b_turn_start
+            turn = 0.0
+            if 0 <= time_in_weave < 4 * self.b_turn_leg:
+                # Return to the original heading after traversing both sides.
+                leg = time_in_weave // self.b_turn_leg
+                turn = self.turn if leg in (0, 3) else -self.turn
+        else:
+            turn_starts = round((10 / 6) * CONTROL_HZ)
+            turn = self.turn if self.stage == "B" and turn_starts <= self.elapsed < 6 * CONTROL_HZ else 0.0
         return self.target_speeds[section], turn
 
     def measure(self, pursuer, target, collided):
@@ -552,6 +596,8 @@ class GazeboTracking(gym.Env):
         self.elapsed += 1
         info = self.measure(pursuer, target, collided)
         info.update(command, target_speed=target_v)
+        if self.stage == "B":
+            info.update(b_first_turn="left" if self.turn > 0 else "right", target_yaw_rate=target_w)
         failed = collided or self.outside(pursuer)
         gap_error = abs(info["distance"] - GOAL) if info["visible"] else None
         legacy_car_weights = LEGACY_CAR_WEIGHTS.get(self.tracking_reward)
@@ -592,8 +638,10 @@ class GazeboTracking(gym.Env):
         reward *= 6 / CONTROL_HZ
         if self.stage in PILLAR_STAGES:
             distance_to_pillar = pillar_clearance(pursuer, self.pillar_center, self.collision_half_size)
-            penalty = (clearance_penalty(distance_to_pillar, self.clearance_threshold, self.max_clearance_penalty)
-                       if self.penalize_clearance else 0.0)
+            penalty = 0.0
+            if self.penalize_clearance:
+                penalty = clearance_penalty(distance_to_pillar, self.clearance_threshold, self.max_clearance_penalty,
+                                            c1_target_detour=self.c1_target_detour)
             info.update(pillar_clearance_m=distance_to_pillar, clearance_penalty=penalty)
             reward -= penalty
         if failed:

@@ -238,14 +238,59 @@ class QuadTracking(GazeboTracking):
     def measure(self, pursuer, target, collided):
         info = super().measure(pursuer, target, collided)
         info.update(z=pursuer.z, target_z=target.z, yaw=pursuer.yaw)
+        if self.c1_target_detour:
+            info["target_yaw"] = target.yaw
         return info
 
     def outside(self, pursuer):
         return super().outside(pursuer) or abs(pursuer.z - self.spawn_z) > 0.50
 
 
+class C1TargetDetour:
+    # The target follows one speed schedule across both smooth lane changes.
+    def __init__(self, start_x, start_y, side):
+        self.inner_x = start_x
+        self.outer_x = side * 1.45
+        self.outbound = (-3.95, -3.20)
+        self.inbound = (-.80, .40)
+        self.distance = start_y - self.outbound[0]
+        self.y = np.linspace(self.outbound[0], self.inbound[1], 1025)
+        x = np.array([self.lane(y)[0] for y in self.y])
+        self.arc = np.r_[0., np.cumsum(np.hypot(np.diff(x), np.diff(self.y)))]
+
+    def lane(self, y):
+        if y <= self.outbound[0] or y >= self.inbound[1]:
+            return self.inner_x, 0.
+        if self.outbound[1] <= y <= self.inbound[0]:
+            return self.outer_x, 0.
+        if y < self.outbound[1]:
+            bounds, start, end = self.outbound, self.inner_x, self.outer_x
+        else:
+            bounds, start, end = self.inbound, self.outer_x, self.inner_x
+        width = bounds[1] - bounds[0]
+        u = (y - bounds[0]) / width
+        return start + (end - start) * u * u * (3 - 2 * u), (end - start) * 6 * u * (1 - u) / width
+
+    def advance(self, speed):
+        self.distance += speed * DT
+        if self.distance <= 0:
+            y = self.outbound[0] + self.distance
+        elif self.distance >= self.arc[-1]:
+            y = self.inbound[1] + self.distance - self.arc[-1]
+        else:
+            y = float(np.interp(self.distance, self.arc, self.y))
+        x, dx_dy = self.lane(y)
+        return Pose(x, y, math.atan2(1., dx_dy), ALTITUDE_M)
+
+
 class IdealQuadTracking(QuadTracking):
     """Fixed-altitude kinematics with Gazebo RGB and contact sensing."""
+
+    def reset(self, *, seed=None, options=None):
+        observation, info = super().reset(seed=seed, options=options)
+        if self.c1_target_detour:
+            self.c1_target_path = C1TargetDetour(info["target_x"], info["target_y"], self.route_side)
+        return observation, info
 
     def build_world(self, template, output, rtf):
         if self.stage not in IDEAL_VELOCITY_STAGES:
@@ -292,8 +337,11 @@ class IdealQuadTracking(QuadTracking):
     def advance_motion(self):
         with self.condition:
             _, pursuer, target = self.poses[-1]
-        self._teleport(self.integrate_pose(pursuer, self.pursuer_velocity),
-                       self.integrate_pose(target, self.target_velocity))
+        if self.c1_target_detour:
+            next_target = self.c1_target_path.advance(self.target_velocity[0])
+        else:
+            next_target = self.integrate_pose(target, self.target_velocity)
+        self._teleport(self.integrate_pose(pursuer, self.pursuer_velocity), next_target)
         return self.advance()
 
 

@@ -33,6 +33,9 @@ def evaluate(args):
     if policy is not None and args.observation == "rgb":
         _, height, width = policy.observation_space.shape
         camera_resolution = (width, height)
+    side = args.fixed_route_side
+    if args.stage == "B":
+        side = {"left": 1, "right": -1}.get(args.b_first_turn)
     env = environment(args.world, output / "sim", args.stage, record=args.video, rtf=args.rtf,
                          penalize_clearance=args.clearance_penalty, remove_pillar=args.remove_pillar,
                          clearance_threshold=args.clearance_threshold,
@@ -40,7 +43,8 @@ def evaluate(args):
                          pillar_center=tuple(args.pillar_center), tracking_reward=args.tracking_reward,
                          luo_position_scale_m=args.luo_position_scale,
                          penalize_horizontal_fov=args.horizontal_fov_penalty,
-                         camera_resolution=camera_resolution)
+                         camera_resolution=camera_resolution, fixed_route_side=side,
+                         c1_target_detour=args.c1_target_detour, b_weave=args.b_weave)
     video = None
     try:
         if policy is not None and policy.observation_space != env.observation_space:
@@ -52,6 +56,9 @@ def evaluate(args):
         for number in range(args.episodes):
             seed = args.first_seed + number * args.seed_stride
             obs, info = env.reset(seed=seed)
+            if args.stage == "C1":
+                initial_state = {key: info[key] for key in ("x", "y", "yaw", "target_x", "target_y")}
+                initial_state["target_speeds"] = env.target_speeds.tolist()
             time_to_visible, time_to_gap = [], []
             lost = None
             recovered = None
@@ -97,10 +104,12 @@ def evaluate(args):
                 occlusion_events=count_lost, reacquired=len(time_to_visible),
                 recovery_times_s=time_to_visible, gap_recovery_times_s=time_to_gap,
             ))
+            if args.stage == "B":
+                episodes[-1]["b_first_turn"] = info["b_first_turn"]
             if args.stage == "C1":
                 after_pillar = [row for row in scores if row["past_pillar"]]
                 episodes[-1].update(
-                    side="right" if info["route_side"] > 0 else "left",
+                    side="right" if info["route_side"] > 0 else "left", initial_state=initial_state,
                     passed_pillar=bool(after_pillar),
                     post_pillar_valid_rate=(sum(row["valid"] for row in after_pillar) / len(after_pillar)
                                             if after_pillar else None),
@@ -126,6 +135,9 @@ def evaluate(args):
             early_ends=sum(row["ended_early"] for row in episodes),
             results=episodes,
         )
+        if args.stage == "B":
+            report.update(b_weave=args.b_weave, b_first_turn=args.b_first_turn,
+                          episode_steps=env.duration)
         if args.stage in PILLAR_STAGES:
             count = sum(row["occlusion_events"] for row in episodes)
             recovered = [value for row in episodes for value in row["recovery_times_s"]]
@@ -151,6 +163,9 @@ def evaluate(args):
         if args.stage == "C1":
             report["pillar_removed"] = args.remove_pillar
             report["pillar_center_m"] = args.pillar_center
+            report["c1_target_detour"] = args.c1_target_detour
+            if args.c1_target_detour:
+                report["clearance_curve"] = "quadratic-two-zone"
             report["routes"] = {}
             for side in ("left", "right"):
                 routes = [row for row in episodes if row["side"] == side]
@@ -206,7 +221,18 @@ if __name__ == "__main__":
                         help="Keep C1 routes and measure clearance against the original pillar footprint.")
     parser.add_argument("--pillar-center", nargs=2, type=float, metavar=("X", "Y"), default=(0.0, 0.0),
                         help="Set the C1 pillar's center or reference footprint in world coordinates.")
+    parser.add_argument("--fixed-route-side", type=int, choices=(-1, 1))
+    parser.add_argument("--c1-target-detour", action="store_true",
+                        help="Use the C1 target detour and its two-zone clearance penalty.")
+    parser.add_argument("--b-weave", action="store_true")
+    parser.add_argument("--b-first-turn", choices=("left", "right"))
     args = parser.parse_args()
+    if (args.b_weave or args.b_first_turn) and args.stage != "B":
+        parser.error("Target trajectory options require Stage B")
+    if args.fixed_route_side is not None and args.stage != "C1":
+        parser.error("The fixed route side requires C1")
+    if args.c1_target_detour and (args.stage != "C1" or not args.ideal_velocity):
+        parser.error("The target detour requires ideal C1")
     if args.observation == "truth" and (not args.ideal_velocity or args.blank_rgb):
         parser.error("--observation truth requires --ideal-velocity and is incompatible with --blank-rgb")
     if min(args.camera_resolution) < 1:
@@ -224,7 +250,7 @@ if __name__ == "__main__":
     args.clearance_penalty, args.clearance_threshold, args.max_clearance_penalty = clearance_settings(
         args.stage, args.tracking_reward, args.clearance_penalty,
         args.clearance_threshold, args.max_clearance_penalty,
-        remove_pillar=args.remove_pillar,
+        remove_pillar=args.remove_pillar, c1_target_detour=args.c1_target_detour,
     )
     if args.tracking_reward == "visible-gap" and args.horizontal_fov_penalty:
         parser.error("visible-gap already includes a horizontal bearing penalty")

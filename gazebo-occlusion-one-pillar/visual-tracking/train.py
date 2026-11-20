@@ -130,6 +130,11 @@ def make_env(args, directory, index):
     instance = directory / f"sim-{index}"
     side = 1 if index % 2 == 0 else -1
     pillar_x, pillar_y = args.mirrored_pillar or (0.0, 0.0)
+    info_keywords = ()
+    if args.stage == "C1":
+        info_keywords = ("collision", "past_pillar")
+    elif args.b_weave:
+        info_keywords = ("b_first_turn",)
     environment = GazeboTracking
     if args.vehicle == "quad":
         from quad_tracking_env import IdealQuadTracking, QuadTracking, TruthQuadTracking
@@ -147,9 +152,11 @@ def make_env(args, directory, index):
                                   penalize_horizontal_fov=args.horizontal_fov_penalty,
                                   camera_resolution=args.camera_resolution,
                                   pillar_center=(side * pillar_x, pillar_y),
-                                  fixed_route_side=side if args.mirrored_pillar else None),
+                                  fixed_route_side=side if args.mirrored_pillar or args.b_weave else None,
+                                  c1_target_detour=args.c1_target_detour,
+                                  b_weave=args.b_weave),
                    str(instance / "episodes"),
-                   info_keywords=("collision", "past_pillar") if args.stage == "C1" else ())
+                   info_keywords=info_keywords)
 
 
 def train(args):
@@ -171,6 +178,8 @@ def train(args):
                               approach_weight=APPROACH_WEIGHT, lost=LOST_REWARD,
                               collision=-COLLISION_PENALTY, clearance_threshold_m=args.clearance_threshold,
                               max_clearance_penalty=args.max_clearance_penalty if args.clearance_penalty else 0.0))
+    if args.c1_target_detour:
+        config["reward"]["clearance_curve"] = "quadratic-two-zone"
     legacy_car_weights = LEGACY_CAR_WEIGHTS.get(args.tracking_reward)
     if legacy_car_weights is not None:
         distance_weight, center_weight = legacy_car_weights
@@ -280,7 +289,16 @@ if __name__ == "__main__":
     parser.add_argument("--max-clearance-penalty", type=float)
     parser.add_argument("--mirrored-pillar", nargs=2, type=float, metavar=("ABS_X", "Y"),
                         help="Pair each C1 route side with a mirrored pillar center.")
+    parser.add_argument("--c1-target-detour", action="store_true",
+                        help="Use the C1 target detour and its two-zone clearance penalty.")
+    parser.add_argument("--b-weave", action="store_true",
+                        help="Use the two-direction target trajectory in Stage B.")
     args = parser.parse_args()
+    if args.b_weave and (args.stage != "B" or args.environments % 2):
+        parser.error("--b-weave requires Stage B and an even environment count")
+    if args.c1_target_detour and (args.stage != "C1" or not args.ideal_velocity
+                                  or not args.mirrored_pillar or args.environments % 2):
+        parser.error("The target detour requires ideal C1 and even mirror-paired environments")
     if args.cube_target and args.vehicle != "quad":
         parser.error("--cube-target requires --vehicle quad")
     if not math.isfinite(args.target_visual_scale) or args.target_visual_scale <= 0:
@@ -297,6 +315,7 @@ if __name__ == "__main__":
     args.clearance_penalty, args.clearance_threshold, args.max_clearance_penalty = clearance_settings(
         args.stage, args.tracking_reward, args.clearance_penalty,
         args.clearance_threshold, args.max_clearance_penalty,
+        c1_target_detour=args.c1_target_detour,
     )
     if args.tracking_reward == "visible-gap" and args.horizontal_fov_penalty:
         parser.error("visible-gap already includes a horizontal bearing penalty")
