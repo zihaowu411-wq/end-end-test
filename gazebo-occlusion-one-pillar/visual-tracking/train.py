@@ -79,7 +79,7 @@ class Progress(BaseCallback):
             self.valid_steps[index] += info["valid"]
             self.visible_steps[index] += info["visible"]
             if done:
-                duration = self.planned_steps[index]
+                duration = info.get("b1_planned_steps", self.planned_steps[index])
                 valid_rate = self.valid_steps[index] / duration
                 self.episodes.append({
                     "return": info["episode"]["r"],
@@ -133,6 +133,8 @@ def make_env(args, directory, index):
     info_keywords = ()
     if args.stage == "C1":
         info_keywords = ("collision", "past_pillar")
+    elif args.stage == "B1":
+        info_keywords = ("b1_route", "b_first_turn", "collision", "b1_route_complete", "b1_planned_steps")
     elif args.b_weave:
         info_keywords = ("b_first_turn",)
     environment = GazeboTracking
@@ -143,6 +145,19 @@ def make_env(args, directory, index):
             quad_environment = TruthQuadTracking
         environment = partial(quad_environment, cube_target=getattr(args, "cube_target", False),
                               target_visual_scale=getattr(args, "target_visual_scale", 1.0))
+    if args.stage == "B1":
+        from b1_tracking_env import B1_ROUTES, B1Tracking
+        focus = args.b1_focus_route
+        if index < len(focus):
+            routes = (focus[index],)
+        else:
+            background = tuple(route for route in B1_ROUTES if route not in focus) or B1_ROUTES
+            worker = index - len(focus)
+            background_workers = args.environments - len(focus)
+            routes = background[worker::background_workers] or (background[worker % len(background)],)
+        environment = partial(B1Tracking, routes=routes, mirror_episodes=True, cube_target=args.cube_target,
+                              reverse_speed_mps=args.b1_reverse_speed,
+                              target_visual_scale=args.target_visual_scale)
     return Monitor(environment(args.world, instance, args.stage, rtf=args.rtf,
                                   penalize_clearance=args.clearance_penalty,
                                   clearance_threshold=args.clearance_threshold,
@@ -152,7 +167,7 @@ def make_env(args, directory, index):
                                   penalize_horizontal_fov=args.horizontal_fov_penalty,
                                   camera_resolution=args.camera_resolution,
                                   pillar_center=(side * pillar_x, pillar_y),
-                                  fixed_route_side=side if args.mirrored_pillar or args.b_weave else None,
+                                  fixed_route_side=side if args.mirrored_pillar or args.b_weave or args.stage == "B1" else None,
                                   c1_target_detour=args.c1_target_detour,
                                   b_weave=args.b_weave),
                    str(instance / "episodes"),
@@ -224,6 +239,9 @@ def train(args):
         config["reward"].update(fov_penalty_start_deg=FOV_PENALTY_START_DEG,
                                 fov_penalty_full_deg=HORIZONTAL_FOV_HALF_DEG,
                                 fov_max_penalty=FOV_MAX_PENALTY)
+    if args.stage == "B1":
+        from b1_tracking_env import B1_LOOP_RADIUS_M, B1_ROUTES
+        config.update(b1_routes=B1_ROUTES, b1_loop_radius_m=B1_LOOP_RADIUS_M)
     if args.observation == "truth":
         from quad_tracking_env import TruthQuadTracking
         config["observation_fields"] = TruthQuadTracking.fields
@@ -259,7 +277,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--world", type=Path, default=Path("../one_pillar.sdf"))
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--stage", choices=STAGES, default="A")
+    parser.add_argument("--stage", choices=(*STAGES, "B1"), default="A")
     parser.add_argument("--vehicle", choices=("car", "quad"), default="car")
     parser.add_argument("--cube-target", action="store_true",
                         help="Render the quadrotor target as a red cube.")
@@ -293,7 +311,20 @@ if __name__ == "__main__":
                         help="Use the C1 target detour and its two-zone clearance penalty.")
     parser.add_argument("--b-weave", action="store_true",
                         help="Use the two-direction target trajectory in Stage B.")
+    from b1_tracking_env import B1_ROUTES
+    parser.add_argument("--b1-focus-route", action="append", choices=B1_ROUTES, default=[],
+                        help="Reserve one B1 worker per occurrence for the selected route.")
+    parser.add_argument("--b1-reverse-speed", type=float, default=0.0, metavar="MPS",
+                        help="Maximum backward speed for the low end of the Stage B1 forward action.")
     args = parser.parse_args()
+    if not math.isfinite(args.b1_reverse_speed) or args.b1_reverse_speed < 0:
+        parser.error("--b1-reverse-speed must be finite and nonnegative")
+    if args.b1_reverse_speed and args.stage != "B1":
+        parser.error("--b1-reverse-speed requires Stage B1")
+    if args.b1_focus_route and (args.stage != "B1" or len(args.b1_focus_route) >= args.environments):
+        parser.error("--b1-focus-route requires Stage B1 and a worker for the other routes")
+    if args.stage == "B1" and (args.vehicle != "quad" or not args.ideal_velocity or args.observation != "rgb"):
+        parser.error("Stage B1 requires an ideal-velocity quadrotor with RGB observations")
     if args.b_weave and (args.stage != "B" or args.environments % 2):
         parser.error("--b-weave requires Stage B and an even environment count")
     if args.c1_target_detour and (args.stage != "C1" or not args.ideal_velocity
@@ -305,7 +336,7 @@ if __name__ == "__main__":
         parser.error("--target-visual-scale must be finite and positive")
     if args.target_visual_scale != 1.0 and (args.vehicle != "quad" or args.cube_target):
         parser.error("--target-visual-scale requires an X3 quadrotor target")
-    if args.ideal_velocity and (args.vehicle != "quad" or args.stage not in IDEAL_VELOCITY_STAGES):
+    if args.ideal_velocity and (args.vehicle != "quad" or args.stage not in (*IDEAL_VELOCITY_STAGES, "B1")):
         parser.error("--ideal-velocity requires --vehicle quad and --stage A, B, or C1")
     if args.observation == "truth" and not args.ideal_velocity:
         parser.error("--observation truth requires --ideal-velocity")

@@ -28,13 +28,18 @@ def evaluate(args):
             quad_environment = TruthQuadTracking
         environment = partial(quad_environment, cube_target=getattr(args, "cube_target", False),
                               target_visual_scale=getattr(args, "target_visual_scale", 1.0))
+    if args.stage == "B1":
+        from b1_tracking_env import B1Tracking
+        environment = partial(B1Tracking, routes=(args.b1_route,), cube_target=args.cube_target,
+                              reverse_speed_mps=args.b1_reverse_speed,
+                              target_visual_scale=args.target_visual_scale)
     policy = None if args.constant_speed is not None else RecurrentPPO.load(args.model, device="cpu")
     camera_resolution = tuple(args.camera_resolution)
     if policy is not None and args.observation == "rgb":
         _, height, width = policy.observation_space.shape
         camera_resolution = (width, height)
     side = args.fixed_route_side
-    if args.stage == "B":
+    if args.stage in ("B", "B1"):
         side = {"left": 1, "right": -1}.get(args.b_first_turn)
     env = environment(args.world, output / "sim", args.stage, record=args.video, rtf=args.rtf,
                          penalize_clearance=args.clearance_penalty, remove_pillar=args.remove_pillar,
@@ -104,8 +109,11 @@ def evaluate(args):
                 occlusion_events=count_lost, reacquired=len(time_to_visible),
                 recovery_times_s=time_to_visible, gap_recovery_times_s=time_to_gap,
             ))
-            if args.stage == "B":
+            if args.stage in ("B", "B1"):
                 episodes[-1]["b_first_turn"] = info["b_first_turn"]
+            if args.stage == "B1":
+                episodes[-1].update(b1_route=info["b1_route"], b1_route_complete=info["b1_route_complete"],
+                                    planned_steps=env.duration)
             if args.stage == "C1":
                 after_pillar = [row for row in scores if row["past_pillar"]]
                 episodes[-1].update(
@@ -135,6 +143,9 @@ def evaluate(args):
             early_ends=sum(row["ended_early"] for row in episodes),
             results=episodes,
         )
+        if args.stage == "B1":
+            report.update(b1_route=args.b1_route, b_first_turn=args.b_first_turn,
+                          b1_reverse_speed=args.b1_reverse_speed)
         if args.stage == "B":
             report.update(b_weave=args.b_weave, b_first_turn=args.b_first_turn,
                           episode_steps=env.duration)
@@ -191,7 +202,7 @@ if __name__ == "__main__":
     policy.add_argument("--model", type=Path)
     policy.add_argument("--constant-speed", type=float, help="Uncontrolled straight-line comparison, in m/s.")
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--stage", choices=STAGES, default="A")
+    parser.add_argument("--stage", choices=(*STAGES, "B1"), default="A")
     parser.add_argument("--vehicle", choices=("car", "quad"), default="car")
     parser.add_argument("--cube-target", action="store_true",
                         help="Render the quadrotor target as a red cube.")
@@ -226,8 +237,20 @@ if __name__ == "__main__":
                         help="Use the C1 target detour and its two-zone clearance penalty.")
     parser.add_argument("--b-weave", action="store_true")
     parser.add_argument("--b-first-turn", choices=("left", "right"))
+    from b1_tracking_env import B1_ROUTES
+    parser.add_argument("--b1-route", choices=B1_ROUTES)
+    parser.add_argument("--b1-reverse-speed", type=float, default=0.0, metavar="MPS")
     args = parser.parse_args()
-    if (args.b_weave or args.b_first_turn) and args.stage != "B":
+    if not math.isfinite(args.b1_reverse_speed) or args.b1_reverse_speed < 0:
+        parser.error("--b1-reverse-speed must be finite and nonnegative")
+    if args.b1_reverse_speed and args.stage != "B1":
+        parser.error("--b1-reverse-speed requires Stage B1")
+    if args.stage == "B1" and (args.vehicle != "quad" or not args.ideal_velocity or args.observation != "rgb"
+                               or args.b1_route is None):
+        parser.error("Stage B1 requires an ideal-velocity quadrotor, RGB and a specific --b1-route")
+    if args.b1_route and args.stage != "B1":
+        parser.error("--b1-route requires Stage B1")
+    if (args.b_weave and args.stage != "B") or (args.b_first_turn and args.stage not in ("B", "B1")):
         parser.error("Target trajectory options require Stage B")
     if args.fixed_route_side is not None and args.stage != "C1":
         parser.error("The fixed route side requires C1")
@@ -243,10 +266,10 @@ if __name__ == "__main__":
         parser.error("--target-visual-scale must be finite and positive")
     if args.target_visual_scale != 1.0 and (args.vehicle != "quad" or args.cube_target):
         parser.error("--target-visual-scale requires an X3 quadrotor target")
-    if args.ideal_velocity and (args.vehicle != "quad" or args.stage not in IDEAL_VELOCITY_STAGES):
+    if args.ideal_velocity and (args.vehicle != "quad" or args.stage not in (*IDEAL_VELOCITY_STAGES, "B1")):
         parser.error("--ideal-velocity requires --vehicle quad and --stage A, B, or C1")
     if args.tracking_reward is None:
-        args.tracking_reward = "legacy-car" if args.stage == "C1" and args.vehicle == "quad" else "original"
+        args.tracking_reward = "legacy-car" if args.stage in ("C1", "B1") and args.vehicle == "quad" else "original"
     args.clearance_penalty, args.clearance_threshold, args.max_clearance_penalty = clearance_settings(
         args.stage, args.tracking_reward, args.clearance_penalty,
         args.clearance_threshold, args.max_clearance_penalty,
