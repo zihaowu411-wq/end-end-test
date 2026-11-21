@@ -11,7 +11,8 @@ import torch
 
 from tracking_env import (
     APPROACH_WEIGHT, CAMERA_HZ, CONTROL_HZ, GOAL, LUO_POSITION_SCALE_M, PILLAR_STAGES, STAGES, TOLERANCE,
-    HEIGHT, IDEAL_VELOCITY_STAGES, TRACKING_REWARDS, WIDTH, GazeboTracking, clearance_settings,
+    ARENA_HALF_SIZE, HEIGHT, IDEAL_VELOCITY_STAGES, TRACKING_REWARDS, WIDTH, GazeboTracking,
+    arena_walls_enabled, clearance_settings,
 )
 
 
@@ -146,6 +147,13 @@ def evaluate(args):
         if args.stage == "B1":
             report.update(b1_route=args.b1_route, b_first_turn=args.b_first_turn,
                           b1_reverse_speed=args.b1_reverse_speed)
+        if env.arena_walls:
+            report["arena_inner_half_size_m"] = ARENA_HALF_SIZE
+            report["clearance_curve"] = "quadratic-two-zone"
+            report["mean_episode_minimum_wall_clearance_m"] = float(np.mean([
+                min(row["wall_clearance_m"] for row in trace if row["seed"] == episode["seed"])
+                for episode in episodes
+            ]))
         if args.stage == "B":
             report.update(b_weave=args.b_weave, b_first_turn=args.b_first_turn,
                           episode_steps=env.duration)
@@ -158,10 +166,12 @@ def evaluate(args):
                           mean_reacquisition_s=float(np.mean(recovered)) if recovered else None,
                           gap_restored=len(restored_gap),
                           mean_gap_recovery_s=float(np.mean(restored_gap)) if restored_gap else None)
+        if args.stage in PILLAR_STAGES or env.arena_walls:
             report["clearance_penalty_enabled"] = env.penalize_clearance
             if env.penalize_clearance:
                 report["clearance_threshold_m"] = env.clearance_threshold
                 report["max_clearance_penalty"] = env.max_clearance_penalty
+        if args.stage in PILLAR_STAGES:
             report["mean_episode_minimum_clearance_m"] = float(np.mean([
                 min(row["pillar_clearance_m"] for row in trace if row["seed"] == episode["seed"])
                 for episode in episodes
@@ -270,10 +280,11 @@ if __name__ == "__main__":
         parser.error("--ideal-velocity requires --vehicle quad and --stage A, B, or C1")
     if args.tracking_reward is None:
         args.tracking_reward = "legacy-car" if args.stage in ("C1", "B1") and args.vehicle == "quad" else "original"
+    arena_walls = arena_walls_enabled(args.stage, args.ideal_velocity)
     args.clearance_penalty, args.clearance_threshold, args.max_clearance_penalty = clearance_settings(
         args.stage, args.tracking_reward, args.clearance_penalty,
         args.clearance_threshold, args.max_clearance_penalty,
-        remove_pillar=args.remove_pillar, c1_target_detour=args.c1_target_detour,
+        remove_pillar=args.remove_pillar, c1_target_detour=args.c1_target_detour, arena_walls=arena_walls,
     )
     if args.tracking_reward == "visible-gap" and args.horizontal_fov_penalty:
         parser.error("visible-gap already includes a horizontal bearing penalty")
@@ -285,14 +296,16 @@ if __name__ == "__main__":
         parser.error("--constant-speed must be within [0, 1.5]")
     if args.blank_rgb and not args.model:
         parser.error("--blank-rgb requires --model")
-    if args.clearance_penalty and args.stage not in PILLAR_STAGES:
-        parser.error("--clearance-penalty requires a stage with a pillar")
+    if args.clearance_penalty and args.stage not in (*PILLAR_STAGES, "B1"):
+        parser.error("--clearance-penalty requires a stage with a pillar or walls")
     if not math.isfinite(args.clearance_threshold) or args.clearance_threshold <= 0:
         parser.error("--clearance-threshold must be finite and positive")
     if not math.isfinite(args.max_clearance_penalty) or args.max_clearance_penalty < 0:
         parser.error("--max-clearance-penalty must be finite and nonnegative")
-    if args.remove_pillar and (args.stage != "C1" or args.clearance_penalty):
-        parser.error("--remove-pillar requires stage C1 with the clearance penalty disabled")
+    if args.remove_pillar and args.stage != "C1":
+        parser.error("--remove-pillar requires Stage C1")
+    if args.remove_pillar and args.clearance_penalty and not arena_walls:
+        parser.error("--remove-pillar requires walls when the clearance penalty is enabled")
     if not all(map(math.isfinite, args.pillar_center)):
         parser.error("--pillar-center requires finite coordinates")
     if tuple(args.pillar_center) != (0.0, 0.0) and args.stage != "C1":

@@ -1,4 +1,4 @@
-"""Obstacle-free Stage B1 target trajectories for ideal quadrotors."""
+"""Stage B1 target trajectories for ideal quadrotors in a walled arena."""
 
 import math
 
@@ -8,7 +8,7 @@ from tracking_env import CONTROL_HZ, DT
 B1_ROUTES = (
     "single-100", "single-120", "single-150",
     "alternate-100", "alternate-120", "alternate-150",
-    "circle", "eight",
+    "circle", "eight", "b-weave",
 )
 CLOSED_ROUTES = ("circle", "eight")
 B1_LOOP_RADIUS_M = 3.0
@@ -29,7 +29,7 @@ class B1Tracking(IdealQuadTracking):
         self.first_side = kwargs.get("fixed_route_side") or 1
         self.episode_index = 0
         kwargs["b_weave"] = True
-        super().__init__(template, directory, "B", **kwargs)
+        super().__init__(template, directory, "B", arena_walls=True, **kwargs)
 
     def reset(self, *, seed=None, options=None):
         pair, phase = divmod(self.episode_index, 2)
@@ -41,6 +41,9 @@ class B1Tracking(IdealQuadTracking):
         if self.route in CLOSED_ROUTES:
             self.loops = 1 if self.route == "circle" else 2
             self.duration = LEAD_IN_STEPS + self.loops * LOOP_STEPS + FINISH_STEPS
+        elif self.route == "b-weave":
+            # Keep the original Stage B turn rate, timings and speed schedule.
+            self.turn_legs = 4
         else:
             profile, angle = self.route.split("-")
             self.turn_legs = 1 if profile == "single" else 4

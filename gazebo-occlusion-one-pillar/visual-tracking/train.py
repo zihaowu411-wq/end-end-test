@@ -28,7 +28,7 @@ from tracking_env import (
     VALID_PROGRESS_GAP_SCALE_M, VALID_PROGRESS_GAP_WEIGHT,
     VALID_PROGRESS_IN_BAND_REWARD, VALID_PROGRESS_LOST_REWARD, VALID_PROGRESS_VISIBLE_REWARD,
     VISIBLE_GAP_BEARING_WEIGHT, VISIBLE_GAP_DISTANCE_WEIGHT, VISIBLE_GAP_LOST_REWARD, WIDTH, GazeboTracking,
-    clearance_settings,
+    ARENA_HALF_SIZE, arena_walls_enabled, clearance_settings,
 )
 
 
@@ -60,9 +60,10 @@ class FollowingState(BaseFeaturesExtractor):
 
 
 class Progress(BaseCallback):
-    def __init__(self, directory):
+    def __init__(self, directory, *, checkpoint_after_update=False):
         super().__init__()
         self.directory = directory
+        self.checkpoint_after_update = checkpoint_after_update
         self.start_time = monotonic()
         self.start_step = None
         self.last_report = 0
@@ -120,20 +121,37 @@ class Progress(BaseCallback):
             report = {"steps": self.num_timesteps, **self.episode_summary()}
             path.write_text(json.dumps(report, indent=2) + "\n")
 
-    def _on_rollout_end(self):
-        if (self.num_timesteps - self.start_step) % 2048 == 0:
+    def _save_checkpoint(self):
+        relative_steps = self.num_timesteps - self.start_step
+        if relative_steps > 0 and relative_steps % 2048 == 0:
             path = self.directory / f"checkpoint-{self.num_timesteps:07}.zip"
             self.model.save(path)
 
+    def _on_rollout_start(self):
+        if self.checkpoint_after_update:
+            self._save_checkpoint()
+
+    def _on_rollout_end(self):
+        if not self.checkpoint_after_update:
+            self._save_checkpoint()
+
+
+def worker_stage(args, index):
+    b1_workers = getattr(args, "c1_b1_environments", 0)
+    if b1_workers and index >= args.environments - b1_workers:
+        return "B1"
+    return args.stage
+
 
 def make_env(args, directory, index):
+    stage = worker_stage(args, index)
     instance = directory / f"sim-{index}"
     side = 1 if index % 2 == 0 else -1
-    pillar_x, pillar_y = args.mirrored_pillar or (0.0, 0.0)
+    pillar_x, pillar_y = (args.mirrored_pillar or (0.0, 0.0)) if stage == "C1" else (0.0, 0.0)
     info_keywords = ()
-    if args.stage == "C1":
+    if stage == "C1":
         info_keywords = ("collision", "past_pillar")
-    elif args.stage == "B1":
+    elif stage == "B1":
         info_keywords = ("b1_route", "b_first_turn", "collision", "b1_route_complete", "b1_planned_steps")
     elif args.b_weave:
         info_keywords = ("b_first_turn",)
@@ -145,20 +163,22 @@ def make_env(args, directory, index):
             quad_environment = TruthQuadTracking
         environment = partial(quad_environment, cube_target=getattr(args, "cube_target", False),
                               target_visual_scale=getattr(args, "target_visual_scale", 1.0))
-    if args.stage == "B1":
+    if stage == "B1":
         from b1_tracking_env import B1_ROUTES, B1Tracking
+        count = args.environments if args.stage == "B1" else args.c1_b1_environments
+        b1_index = index - (args.environments - count)
         focus = args.b1_focus_route
-        if index < len(focus):
-            routes = (focus[index],)
+        if b1_index < len(focus):
+            routes = (focus[b1_index],)
         else:
             background = tuple(route for route in B1_ROUTES if route not in focus) or B1_ROUTES
-            worker = index - len(focus)
-            background_workers = args.environments - len(focus)
+            worker = b1_index - len(focus)
+            background_workers = count - len(focus)
             routes = background[worker::background_workers] or (background[worker % len(background)],)
         environment = partial(B1Tracking, routes=routes, mirror_episodes=True, cube_target=args.cube_target,
                               reverse_speed_mps=args.b1_reverse_speed,
                               target_visual_scale=args.target_visual_scale)
-    return Monitor(environment(args.world, instance, args.stage, rtf=args.rtf,
+    return Monitor(environment(args.world, instance, stage, rtf=args.rtf,
                                   penalize_clearance=args.clearance_penalty,
                                   clearance_threshold=args.clearance_threshold,
                                   max_clearance_penalty=args.max_clearance_penalty,
@@ -167,8 +187,8 @@ def make_env(args, directory, index):
                                   penalize_horizontal_fov=args.horizontal_fov_penalty,
                                   camera_resolution=args.camera_resolution,
                                   pillar_center=(side * pillar_x, pillar_y),
-                                  fixed_route_side=side if args.mirrored_pillar or args.b_weave or args.stage == "B1" else None,
-                                  c1_target_detour=args.c1_target_detour,
+                                  fixed_route_side=side if args.mirrored_pillar or args.b_weave or stage == "B1" else None,
+                                  c1_target_detour=args.c1_target_detour and stage == "C1",
                                   b_weave=args.b_weave),
                    str(instance / "episodes"),
                    info_keywords=info_keywords)
@@ -193,8 +213,11 @@ def train(args):
                               approach_weight=APPROACH_WEIGHT, lost=LOST_REWARD,
                               collision=-COLLISION_PENALTY, clearance_threshold_m=args.clearance_threshold,
                               max_clearance_penalty=args.max_clearance_penalty if args.clearance_penalty else 0.0))
-    if args.c1_target_detour:
+    arena_walls = arena_walls_enabled(args.stage, args.ideal_velocity)
+    if args.c1_target_detour or arena_walls:
         config["reward"]["clearance_curve"] = "quadratic-two-zone"
+    if arena_walls:
+        config["arena_inner_half_size_m"] = ARENA_HALF_SIZE
     legacy_car_weights = LEGACY_CAR_WEIGHTS.get(args.tracking_reward)
     if legacy_car_weights is not None:
         distance_weight, center_weight = legacy_car_weights
@@ -239,7 +262,9 @@ def train(args):
         config["reward"].update(fov_penalty_start_deg=FOV_PENALTY_START_DEG,
                                 fov_penalty_full_deg=HORIZONTAL_FOV_HALF_DEG,
                                 fov_max_penalty=FOV_MAX_PENALTY)
-    if args.stage == "B1":
+    if args.c1_b1_environments:
+        config["parallel_stages"] = [worker_stage(args, i) for i in range(args.environments)]
+    if args.stage == "B1" or args.c1_b1_environments:
         from b1_tracking_env import B1_LOOP_RADIUS_M, B1_ROUTES
         config.update(b1_routes=B1_ROUTES, b1_loop_radius_m=B1_LOOP_RADIUS_M)
     if args.observation == "truth":
@@ -266,7 +291,8 @@ def train(args):
                 verbose=1, device=args.device, seed=args.seed,
                 tensorboard_log=str(directory / "tensorboard"),
             )
-        model.learn(args.steps, callback=Progress(directory), reset_num_timesteps=not args.resume)
+        progress = Progress(directory, checkpoint_after_update=bool(args.c1_b1_environments))
+        model.learn(args.steps, callback=progress, reset_num_timesteps=not args.resume)
         model.save(directory / "final.zip")
         (directory / "completed").touch()
     finally:
@@ -307,6 +333,8 @@ if __name__ == "__main__":
     parser.add_argument("--max-clearance-penalty", type=float)
     parser.add_argument("--mirrored-pillar", nargs=2, type=float, metavar=("ABS_X", "Y"),
                         help="Pair each C1 route side with a mirrored pillar center.")
+    parser.add_argument("--c1-b1-environments", type=int, default=0,
+                        help="Use this many B1 workers alongside the mirrored C1 workers.")
     parser.add_argument("--c1-target-detour", action="store_true",
                         help="Use the C1 target detour and its two-zone clearance penalty.")
     parser.add_argument("--b-weave", action="store_true",
@@ -317,6 +345,12 @@ if __name__ == "__main__":
     parser.add_argument("--b1-reverse-speed", type=float, default=0.0, metavar="MPS",
                         help="Maximum backward speed for the low end of the Stage B1 forward action.")
     args = parser.parse_args()
+    c1_workers = args.environments - args.c1_b1_environments
+    if args.c1_b1_environments < 0 or (args.c1_b1_environments and c1_workers < 2):
+        parser.error("--c1-b1-environments must leave at least two C1 workers")
+    if args.c1_b1_environments and (args.stage != "C1" or args.vehicle != "quad" or not args.ideal_velocity
+                                    or args.observation != "rgb" or not args.mirrored_pillar or c1_workers % 2):
+        parser.error("Mixed B1 workers require ideal RGB quadrotors and an even number of mirrored C1 workers")
     if not math.isfinite(args.b1_reverse_speed) or args.b1_reverse_speed < 0:
         parser.error("--b1-reverse-speed must be finite and nonnegative")
     if args.b1_reverse_speed and args.stage != "B1":
@@ -328,7 +362,7 @@ if __name__ == "__main__":
     if args.b_weave and (args.stage != "B" or args.environments % 2):
         parser.error("--b-weave requires Stage B and an even environment count")
     if args.c1_target_detour and (args.stage != "C1" or not args.ideal_velocity
-                                  or not args.mirrored_pillar or args.environments % 2):
+                                  or not args.mirrored_pillar or c1_workers % 2):
         parser.error("The target detour requires ideal C1 and even mirror-paired environments")
     if args.cube_target and args.vehicle != "quad":
         parser.error("--cube-target requires --vehicle quad")
@@ -346,7 +380,7 @@ if __name__ == "__main__":
     args.clearance_penalty, args.clearance_threshold, args.max_clearance_penalty = clearance_settings(
         args.stage, args.tracking_reward, args.clearance_penalty,
         args.clearance_threshold, args.max_clearance_penalty,
-        c1_target_detour=args.c1_target_detour,
+        c1_target_detour=args.c1_target_detour, arena_walls=arena_walls_enabled(args.stage, args.ideal_velocity),
     )
     if args.tracking_reward == "visible-gap" and args.horizontal_fov_penalty:
         parser.error("visible-gap already includes a horizontal bearing penalty")
@@ -356,13 +390,13 @@ if __name__ == "__main__":
         parser.error("--camera-resolution dimensions must be positive")
     if args.environments < 1:
         parser.error("--environments must be positive")
-    if args.clearance_penalty and args.stage not in PILLAR_STAGES:
-        parser.error("--clearance-penalty requires a stage with a pillar")
+    if args.clearance_penalty and args.stage not in (*PILLAR_STAGES, "B1"):
+        parser.error("--clearance-penalty requires a stage with a pillar or walls")
     if not math.isfinite(args.clearance_threshold) or args.clearance_threshold <= 0:
         parser.error("--clearance-threshold must be finite and positive")
     if not math.isfinite(args.max_clearance_penalty) or args.max_clearance_penalty < 0:
         parser.error("--max-clearance-penalty must be finite and nonnegative")
-    if args.mirrored_pillar and (args.stage != "C1" or args.environments % 2
+    if args.mirrored_pillar and (args.stage != "C1" or c1_workers % 2
                                  or not all(map(math.isfinite, args.mirrored_pillar))
                                  or args.mirrored_pillar[0] < 0):
         parser.error("--mirrored-pillar requires finite coordinates, nonnegative ABS_X and an even number of C1 workers")

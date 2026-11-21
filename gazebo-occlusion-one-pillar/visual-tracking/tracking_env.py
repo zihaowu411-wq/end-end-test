@@ -1,6 +1,7 @@
 """Gazebo Harmonic environment for RGB-only vehicle following."""
 
 from collections import deque
+from copy import deepcopy
 from dataclasses import dataclass
 import math
 import os
@@ -79,6 +80,9 @@ C1_DETOUR_NEAR_PENALTY = 0.25
 C1_DETOUR_NEAR_FRACTION = 0.15
 C1_DETOUR_MAX_CLEARANCE_PENALTY = C1_DETOUR_OUTER_PENALTY + C1_DETOUR_NEAR_PENALTY
 PILLAR_HALF_SIZE = (0.675, 0.725)
+ARENA_HALF_SIZE = (17.0, 16.0)
+ARENA_WALL_HEIGHT_M = 4.0
+ARENA_WALL_THICKNESS_M = 0.25
 CHASSIS_HALF_SIZE = (0.62, 0.315)
 IDEAL_VELOCITY_STAGES = ("A", "B", "C1")
 PILLAR_STAGES = ("C", "C1")
@@ -220,10 +224,23 @@ def pillar_clearance(robot, center=(0.0, 0.0), body_half_size=CHASSIS_HALF_SIZE)
     return min(body_to_pillar, pillar_to_body)
 
 
+def arena_walls_enabled(stage, ideal_velocity):
+    return ideal_velocity and stage in ("B1", "C1")
+
+
+def wall_clearance(robot, body_half_size):
+    """Net clearance from a yawed body box to the nearest inside wall face."""
+    c, s = abs(math.cos(robot.yaw)), abs(math.sin(robot.yaw))
+    dx, dy = body_half_size
+    clearance_x = ARENA_HALF_SIZE[0] - abs(robot.x) - (dx * c + dy * s)
+    clearance_y = ARENA_HALF_SIZE[1] - abs(robot.y) - (dx * s + dy * c)
+    return max(0.0, min(clearance_x, clearance_y))
+
+
 def clearance_settings(stage, tracking_reward, enabled, threshold, maximum, *,
-                       remove_pillar=False, c1_target_detour=False):
+                       remove_pillar=False, c1_target_detour=False, arena_walls=False):
     legacy_c1 = stage == "C1" and tracking_reward == "legacy-car" and not remove_pillar
-    detour = stage == "C1" and c1_target_detour and not remove_pillar
+    detour = arena_walls or (stage == "C1" and c1_target_detour and not remove_pillar)
     if threshold is None:
         threshold = C1_LEGACY_CLEARANCE_THRESHOLD_M if legacy_c1 or detour else CLEARANCE_THRESHOLD_M
     if maximum is None:
@@ -246,8 +263,38 @@ def clearance_penalty(distance, threshold=CLEARANCE_THRESHOLD_M, maximum=MAX_CLE
     return penalty * (maximum / C1_DETOUR_MAX_CLEARANCE_PENALTY)
 
 
-def write_world(template, output, stage, record, rtf, remove_pillar=False, pillar_center=(0.0, 0.0),
-                camera_resolution=(WIDTH, HEIGHT)):
+def add_arena_walls(world, pillar_visual):
+    half_x, half_y = ARENA_HALF_SIZE
+    thickness = ARENA_WALL_THICKNESS_M
+    height = ARENA_WALL_HEIGHT_M
+    width = 2 * (half_x + thickness)
+    length = 2 * (half_y + thickness)
+    for floor_box in world.findall("model[@name='floor']/link/*/geometry/box/size"):
+        floor_box.text = f"{width:g} {length:g} 0.12"
+    walls = (
+        ("east", half_x + thickness / 2, 0, thickness, length),
+        ("west", -half_x - thickness / 2, 0, thickness, length),
+        ("north", 0, half_y + thickness / 2, 2 * half_x, thickness),
+        ("south", 0, -half_y - thickness / 2, 2 * half_x, thickness),
+    )
+    for name, x, y, span_x, span_y in walls:
+        model = ET.SubElement(world, "model", name=f"arena_wall_{name}")
+        ET.SubElement(model, "static").text = "true"
+        ET.SubElement(model, "pose").text = f"{x:g} {y:g} {height / 2:g} 0 0 0"
+        link = ET.SubElement(model, "link", name="wall")
+        collision = ET.SubElement(link, "collision", name="wall")
+        visual = ET.SubElement(link, "visual", name="wall")
+        for shape in (collision, visual):
+            box = ET.SubElement(ET.SubElement(shape, "geometry"), "box")
+            ET.SubElement(box, "size").text = f"{span_x:g} {span_y:g} {height:g}"
+        for tag in ("material", "transparency", "cast_shadows"):
+            appearance = pillar_visual.find(tag)
+            if appearance is not None:
+                visual.append(deepcopy(appearance))
+
+
+def write_world(template, output, record, rtf, *, pillar_present=False, pillar_center=(0.0, 0.0),
+                camera_resolution=(WIDTH, HEIGHT), arena_walls=False):
     tree = ET.parse(template)
     world = tree.getroot().find("world")
     world.find("physics/max_step_size").text = "0.002"
@@ -261,13 +308,15 @@ def write_world(template, output, stage, record, rtf, remove_pillar=False, pilla
     ET.SubElement(contact, "collision").text = "body_collision"
     ET.SubElement(contact, "topic").text = CONTACT
     pillar = world.find("model[@name='pillar']")
-    if stage not in PILLAR_STAGES or remove_pillar:
+    if not pillar_present:
         world.remove(pillar)
     else:
         pose = pillar.find("pose")
         values = pose.text.split()
         values[:2] = map(str, pillar_center)
         pose.text = " ".join(values)
+    if arena_walls:
+        add_arena_walls(world, pillar.find("link/visual"))
     front = chassis.find("sensor[@name='front_rgb']")
     front.find("update_rate").text = str(CAMERA_HZ)
     image = front.find("camera/image")
@@ -301,17 +350,20 @@ class GazeboTracking(gym.Env):
                  fixed_route_side=None, max_clearance_penalty=None,
                  tracking_reward="original", luo_position_scale_m=LUO_POSITION_SCALE_M,
                  penalize_horizontal_fov=False, camera_resolution=(WIDTH, HEIGHT), c1_target_detour=False,
-                 b_weave=False):
+                 b_weave=False, arena_walls=False):
         super().__init__()
         self.camera_resolution = tuple(camera_resolution)
         width, height = self.camera_resolution
         self.observation_space = gym.spaces.Box(0, 255, shape=(3, height, width), dtype=np.uint8)
         self.action_space = gym.spaces.Box(-1.0, 1.0, shape=(len(self.neutral_action),), dtype=np.float32)
         self.stage, self.record = stage, record
+        self.arena_walls = arena_walls
+        self.pillar_present = stage in PILLAR_STAGES and not remove_pillar
         self.penalize_clearance, self.clearance_threshold, self.max_clearance_penalty = clearance_settings(
             stage, tracking_reward, penalize_clearance, clearance_threshold, max_clearance_penalty,
-            remove_pillar=remove_pillar, c1_target_detour=c1_target_detour,
+            remove_pillar=remove_pillar, c1_target_detour=c1_target_detour, arena_walls=arena_walls,
         )
+        self.clearance_quadratic = c1_target_detour or arena_walls
         self.remove_pillar = remove_pillar
         self.pillar_center = pillar_center
         self.fixed_route_side = fixed_route_side
@@ -379,8 +431,9 @@ class GazeboTracking(gym.Env):
             raise
 
     def build_world(self, template, output, rtf):
-        write_world(template, output, self.stage, self.record, rtf, remove_pillar=self.remove_pillar,
-                    pillar_center=self.pillar_center, camera_resolution=self.camera_resolution)
+        write_world(template, output, self.record, rtf, pillar_present=self.pillar_present,
+                    pillar_center=self.pillar_center, camera_resolution=self.camera_resolution,
+                    arena_walls=self.arena_walls)
 
     def _listen(self, message_type, topic, queue, parser):
         def callback(message):
@@ -554,14 +607,22 @@ class GazeboTracking(gym.Env):
         cx = pursuer.x + self.camera_x * math.cos(pursuer.yaw)
         cy = pursuer.y + self.camera_x * math.sin(pursuer.yaw)
         horizontal, in_view = self.target_in_camera(pursuer, target, cx, cy)
-        occluded = (self.stage in PILLAR_STAGES and not self.remove_pillar
+        occluded = (self.pillar_present
                     and blocked_by_pillar(cx, cy, target.x, target.y, self.pillar_center))
         visible = in_view and not occluded
+        distances = {}
+        if self.stage in PILLAR_STAGES:
+            distances["pillar_clearance_m"] = pillar_clearance(pursuer, self.pillar_center, self.collision_half_size)
+        if self.arena_walls:
+            wall_distance = wall_clearance(pursuer, self.collision_half_size)
+            pillar_distance = distances["pillar_clearance_m"] if self.pillar_present else math.inf
+            distances.update(wall_clearance_m=wall_distance, obstacle_clearance_m=min(wall_distance, pillar_distance))
+            collided = collided or wall_distance == 0.0
         valid = visible and abs(distance - GOAL) <= TOLERANCE and not collided
         info = {"time": self.elapsed * DT, "distance": distance, "bearing": horizontal,
                 "visible": visible, "occluded": occluded, "valid": valid, "collision": collided,
                 "x": pursuer.x, "y": pursuer.y, "target_x": target.x, "target_y": target.y,
-                "image_stamp_ns": self.image_stamp, "sim_stamp_ns": self.sim_stamp}
+                "image_stamp_ns": self.image_stamp, "sim_stamp_ns": self.sim_stamp, **distances}
         if self.stage == "C1":
             half_x, half_y = self.collision_half_size
             rear_y = pursuer.y - half_x * abs(math.sin(pursuer.yaw)) - half_y * abs(math.cos(pursuer.yaw))
@@ -582,7 +643,8 @@ class GazeboTracking(gym.Env):
         return {"v": v, "omega": w}
 
     def outside(self, pursuer):
-        return abs(pursuer.x) > 12.15 or abs(pursuer.y) > 8.65
+        half_x, half_y = ARENA_HALF_SIZE if self.arena_walls else (12.15, 8.65)
+        return abs(pursuer.x) > half_x or abs(pursuer.y) > half_y
 
     def advance_motion(self):
         return self.advance()
@@ -598,7 +660,7 @@ class GazeboTracking(gym.Env):
         info.update(command, target_speed=target_v)
         if self.stage == "B":
             info.update(b_first_turn="left" if self.turn > 0 else "right", target_yaw_rate=target_w)
-        failed = collided or self.outside(pursuer)
+        failed = info["collision"] or self.outside(pursuer)
         gap_error = abs(info["distance"] - GOAL) if info["visible"] else None
         legacy_car_weights = LEGACY_CAR_WEIGHTS.get(self.tracking_reward)
         legacy_car = legacy_car_weights is not None
@@ -636,13 +698,13 @@ class GazeboTracking(gym.Env):
         self.previous_action = action
         # Keep the size of rewards per simulated second comparable to the 6 Hz run.
         reward *= 6 / CONTROL_HZ
-        if self.stage in PILLAR_STAGES:
-            distance_to_pillar = pillar_clearance(pursuer, self.pillar_center, self.collision_half_size)
+        obstacle_distance = info.get("obstacle_clearance_m", info.get("pillar_clearance_m"))
+        if obstacle_distance is not None:
             penalty = 0.0
             if self.penalize_clearance:
-                penalty = clearance_penalty(distance_to_pillar, self.clearance_threshold, self.max_clearance_penalty,
-                                            c1_target_detour=self.c1_target_detour)
-            info.update(pillar_clearance_m=distance_to_pillar, clearance_penalty=penalty)
+                penalty = clearance_penalty(obstacle_distance, self.clearance_threshold, self.max_clearance_penalty,
+                                            c1_target_detour=self.clearance_quadratic)
+            info["clearance_penalty"] = penalty
             reward -= penalty
         if failed:
             info["valid"] = False

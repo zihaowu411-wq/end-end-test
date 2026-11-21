@@ -9,7 +9,7 @@ from gz.msgs10.twist_pb2 import Twist
 
 from tracking_env import (
     CONTACT, CONTROL_HZ, DT, GazeboTracking, HORIZONTAL_FOV_HALF_RAD, IDEAL_VELOCITY_STAGES,
-    Pose, pillar_clearance, write_world,
+    Pose, arena_walls_enabled, pillar_clearance,
 )
 
 
@@ -157,8 +157,7 @@ class QuadTracking(GazeboTracking):
             world.append(model)
         source_world = output.with_name("quad-template.sdf")
         tree.write(source_world, encoding="utf-8", xml_declaration=True)
-        write_world(source_world, output, self.stage, self.record, rtf, remove_pillar=self.remove_pillar,
-                    pillar_center=self.pillar_center, camera_resolution=self.camera_resolution)
+        super().build_world(source_world, output, rtf)
 
     def settle_after_teleport(self):
         # Take the first sample after teleporting so the pose reset is not
@@ -285,6 +284,10 @@ class C1TargetDetour:
 
 class IdealQuadTracking(QuadTracking):
     """Fixed-altitude kinematics with Gazebo RGB and contact sensing."""
+
+    def __init__(self, template, directory, stage="A", **kwargs):
+        kwargs.setdefault("arena_walls", arena_walls_enabled(stage, ideal_velocity=True))
+        super().__init__(template, directory, stage, **kwargs)
 
     def reset(self, *, seed=None, options=None):
         observation, info = super().reset(seed=seed, options=options)
