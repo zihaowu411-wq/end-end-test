@@ -126,6 +126,29 @@ class QuadTracking(GazeboTracking):
         self.target_visual_scale = target_visual_scale
         super().__init__(*args, **kwargs)
 
+    def reset(self, *, seed=None, options=None):
+        observation, info = super().reset(seed=seed, options=options)
+        if self.stage == "B":
+            rng = self.np_random
+            self.target_turn_rates = np.empty(self.duration)
+            direction = math.copysign(1.0, self.turn)
+            start = 0
+            while start < self.duration:
+                turn_steps = int(rng.integers(3 * CONTROL_HZ, 4 * CONTROL_HZ + 1))
+                turn_angle = math.radians(rng.uniform(20.0, 100.0))
+                end = start + turn_steps
+                self.target_turn_rates[start:end] = direction * turn_angle / (turn_steps * DT)
+                start = end
+                # Reverse at the boundary so consecutive arcs cannot merge into a turn over 100 degrees.
+                direction = -direction
+        return observation, info
+
+    def target_command(self):
+        speed, yaw_rate = super().target_command()
+        if self.stage == "B":
+            yaw_rate = float(self.target_turn_rates[self.elapsed])
+        return speed, yaw_rate
+
     def build_world(self, template, output, rtf):
         tree = ET.parse(template)
         world = tree.getroot().find("world")

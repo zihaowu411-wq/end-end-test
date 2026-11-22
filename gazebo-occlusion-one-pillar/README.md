@@ -33,7 +33,7 @@ gz sim --version
 
 RUN="/root/autodl-tmp/results/quad-a-visible-gap-$(date +%Y%m%d-%H%M%S)"
 "$PY" -u train.py --vehicle quad --stage A --tracking-reward visible-gap \
-  --device cuda --environments 4 --rollout-steps 256 --learning-rate 0.0003 \
+  --device cuda --environments 4 --rollout-steps 128 --learning-rate 0.0003 \
   --seed 1800 --steps 65536 --rtf 30 --output "$RUN"
 ```
 

@@ -9,6 +9,7 @@ from time import monotonic
 import numpy as np
 import torch
 from sb3_contrib import RecurrentPPO
+from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
@@ -163,9 +164,11 @@ def train(args):
     directory.mkdir(parents=True, exist_ok=False)
     config = {key: str(value) if isinstance(value, Path) else value
               for key, value in vars(args).items()}
-    config.update(n_steps=args.rollout_steps, batch_size=64, n_epochs=5, learning_rate=args.learning_rate, gamma=GAMMA,
+    algorithm = PPO if args.feedforward else RecurrentPPO
+    config.update(algorithm=algorithm.__name__, n_steps=args.rollout_steps, batch_size=64, n_epochs=5, learning_rate=args.learning_rate, gamma=GAMMA,
                   gae_lambda=GAE_LAMBDA, clip_range=0.2, ent_coef=0.005, target_kl=0.035,
-                  lstm_hidden_size=96, control_hz=CONTROL_HZ, camera_hz=CAMERA_HZ, gap_metres=GOAL,
+                  lstm_hidden_size=None if args.feedforward else 96,
+                  control_hz=CONTROL_HZ, camera_hz=CAMERA_HZ, gap_metres=GOAL,
                   reward=dict(distance_weight=DISTANCE_WEIGHT, center_weight=CENTER_WEIGHT,
                               gap_scale=GAP_SCALE, in_band_bonus=IN_BAND_BONUS,
                               approach_weight=APPROACH_WEIGHT, lost=LOST_REWARD,
@@ -224,18 +227,25 @@ def train(args):
     env.seed(args.seed)
     try:
         if args.resume:
-            model = RecurrentPPO.load(args.resume, env=env, device=args.device,
-                                     n_steps=args.rollout_steps, gamma=GAMMA, gae_lambda=GAE_LAMBDA,
-                                     seed=args.seed, learning_rate=args.learning_rate,
-                                     tensorboard_log=str(directory / "tensorboard"))
+            model = algorithm.load(args.resume, env=env, device=args.device,
+                                   n_steps=args.rollout_steps, gamma=GAMMA, gae_lambda=GAE_LAMBDA,
+                                   seed=args.seed, learning_rate=args.learning_rate,
+                                   tensorboard_log=str(directory / "tensorboard"))
         else:
-            model = RecurrentPPO(
-                ("MlpLstmPolicy" if args.observation == "truth" else "CnnLstmPolicy"), env, n_steps=args.rollout_steps, batch_size=64, n_epochs=5,
+            policy_kwargs = dict(net_arch=dict(pi=[64], vf=[64]), log_std_init=-1.15)
+            if args.feedforward:
+                policy_name = "MlpPolicy"
+            else:
+                policy_name = "MlpLstmPolicy" if args.observation == "truth" else "CnnLstmPolicy"
+                policy_kwargs["features_extractor_class"] = (
+                    FollowingState if args.observation == "truth" else FollowingCNN
+                )
+                policy_kwargs["lstm_hidden_size"] = 96
+            model = algorithm(
+                policy_name, env, n_steps=args.rollout_steps, batch_size=64, n_epochs=5,
                 learning_rate=args.learning_rate,
                 gamma=GAMMA, gae_lambda=GAE_LAMBDA, clip_range=0.2, ent_coef=0.005, target_kl=0.035,
-                policy_kwargs=dict(features_extractor_class=(FollowingState if args.observation == "truth" else FollowingCNN),
-                                   lstm_hidden_size=96,
-                                   net_arch=dict(pi=[64], vf=[64]), log_std_init=-1.15),
+                policy_kwargs=policy_kwargs,
                 verbose=1, device=args.device, seed=args.seed,
                 tensorboard_log=str(directory / "tensorboard"),
             )
@@ -267,12 +277,16 @@ if __name__ == "__main__":
     parser.add_argument("--camera-resolution", nargs=2, type=int, metavar=("WIDTH", "HEIGHT"),
                         default=(WIDTH, HEIGHT), help="Onboard RGB image size in pixels.")
     parser.add_argument("--observation", choices=("rgb", "truth"), default="rgb")
+    parser.add_argument("--feedforward", action="store_true",
+                        help="Use standard PPO with an MLP policy for truth observations.")
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--steps", type=int, default=12288)
     parser.add_argument("--rtf", type=float, default=12)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
     parser.add_argument("--environments", type=int, default=1)
-    parser.add_argument("--rollout-steps", type=int, default=256)
+    parser.add_argument("--rollout-steps", type=int,
+                        help="Steps collected per environment before an update. "
+                             "Defaults to 128 for quad stages A, B, and C1, and 256 otherwise.")
     parser.add_argument("--learning-rate", type=float, default=0.0003)
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--clearance-penalty", action="store_true")
@@ -281,6 +295,10 @@ if __name__ == "__main__":
     parser.add_argument("--mirrored-pillar", nargs=2, type=float, metavar=("ABS_X", "Y"),
                         help="Pair each C1 route side with a mirrored pillar center.")
     args = parser.parse_args()
+    if args.feedforward and args.observation != "truth":
+        parser.error("--feedforward requires --observation truth")
+    if args.rollout_steps is None:
+        args.rollout_steps = 128 if args.vehicle == "quad" and args.stage in ("A", "B", "C1") else 256
     if args.cube_target and args.vehicle != "quad":
         parser.error("--cube-target requires --vehicle quad")
     if not math.isfinite(args.target_visual_scale) or args.target_visual_scale <= 0:

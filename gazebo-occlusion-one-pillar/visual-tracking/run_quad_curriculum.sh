@@ -11,7 +11,7 @@ train_from() {
     local stage=$1 seed=$2 steps=$3 checkpoint=$4 directory=$5
     shift 5
     "$python" -u train.py --vehicle quad --stage "$stage" --device cuda --environments 4 \
-        --rollout-steps 256 --learning-rate 0.0001 --seed "$seed" --steps "$steps" --rtf 30 \
+        --learning-rate 0.0001 --seed "$seed" --steps "$steps" --rtf 30 \
         --resume "$checkpoint" --output "$directory" "$@" > "$directory.log" 2>&1
 }
 

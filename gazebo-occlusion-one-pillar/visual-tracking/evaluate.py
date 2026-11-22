@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 from sb3_contrib import RecurrentPPO
+from stable_baselines3 import PPO
 import torch
 
 from tracking_env import (
@@ -28,7 +29,8 @@ def evaluate(args):
             quad_environment = TruthQuadTracking
         environment = partial(quad_environment, cube_target=getattr(args, "cube_target", False),
                               target_visual_scale=getattr(args, "target_visual_scale", 1.0))
-    policy = None if args.constant_speed is not None else RecurrentPPO.load(args.model, device="cpu")
+    algorithm = PPO if args.feedforward else RecurrentPPO
+    policy = None if args.constant_speed is not None else algorithm.load(args.model, device="cpu")
     camera_resolution = tuple(args.camera_resolution)
     if policy is not None and args.observation == "rgb":
         _, height, width = policy.observation_space.shape
@@ -110,6 +112,7 @@ def evaluate(args):
             writer.writeheader()
             writer.writerows(trace)
         report = dict(
+            algorithm=type(policy).__name__ if policy is not None else None,
             vehicle=args.vehicle, ideal_velocity=getattr(args, "ideal_velocity", False),
             stage=args.stage, model=str(args.model), episodes=len(episodes), target_gap_m=GOAL,
             observation=args.observation, tracking_reward=args.tracking_reward, cube_target=getattr(args, "cube_target", False),
@@ -191,6 +194,8 @@ if __name__ == "__main__":
     parser.add_argument("--horizontal-fov-penalty", action="store_true",
                         help="Include the horizontal edge penalty used during training in the recorded rewards.")
     parser.add_argument("--observation", choices=("rgb", "truth"), default="rgb")
+    parser.add_argument("--feedforward", action="store_true",
+                        help="Use standard PPO with an MLP policy for truth observations.")
     parser.add_argument("--camera-resolution", nargs=2, type=int, default=(WIDTH, HEIGHT),
                         metavar=("WIDTH", "HEIGHT"), help="Camera size for truth-input runs or constant-speed tests.")
     parser.add_argument("--episodes", type=int, default=20)
@@ -207,6 +212,8 @@ if __name__ == "__main__":
     parser.add_argument("--pillar-center", nargs=2, type=float, metavar=("X", "Y"), default=(0.0, 0.0),
                         help="Set the C1 pillar's center or reference footprint in world coordinates.")
     args = parser.parse_args()
+    if args.feedforward and args.observation != "truth":
+        parser.error("--feedforward requires --observation truth")
     if args.observation == "truth" and (not args.ideal_velocity or args.blank_rgb):
         parser.error("--observation truth requires --ideal-velocity and is incompatible with --blank-rgb")
     if min(args.camera_resolution) < 1:
