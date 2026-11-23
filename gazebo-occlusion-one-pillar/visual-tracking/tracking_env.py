@@ -62,10 +62,14 @@ VALID_PROGRESS_DISTANCE_REWARD_SCALE_M = 0.95
 LEGACY_CAR_DISTANCE_SCALE_M = 0.95
 LEGACY_CAR_WEIGHTS = {
     "legacy-car": (0.70, 0.30),
+    "legacy-car-band": (0.70, 0.30),
+    "legacy-car-linear-band": (0.70, 0.30),
     "legacy-car-85": (0.85, 0.15),
     "legacy-car-unweighted": (1.0, 1.0),
     "legacy-car-balanced": (0.50, 0.50),
 }
+LEGACY_CAR_DISTANCE_BAND_WEIGHTS = {"legacy-car-band": 0.10, "legacy-car-linear-band": 0.10}
+LEGACY_CAR_LINEAR_DISTANCE_SCALES = {"legacy-car-linear-band": 3.0}
 LEGACY_CAR_LOST_REWARD = -0.35
 LEGACY_CAR_ACTION_CHANGE_WEIGHT = 0.025
 TRACKING_REWARDS = ("original", "luo", "luo-progress", "visible-gap", "valid-progress", *LEGACY_CAR_WEIGHTS)
@@ -159,11 +163,18 @@ def valid_progress_reward(info, previous_potential, terminated):
     return reward + GAMMA * potential - previous_potential, potential
 
 
-def legacy_car_reward(visible, distance, bearing, weights=LEGACY_CAR_WEIGHTS["legacy-car"]):
+def legacy_car_reward(visible, distance, bearing, weights=LEGACY_CAR_WEIGHTS["legacy-car"],
+                      *, band_weight=0.0, linear_scale=None):
     if not visible:
         return LEGACY_CAR_LOST_REWARD
-    gap_error = (distance - GOAL) / LEGACY_CAR_DISTANCE_SCALE_M
-    gap_score = 2 * math.exp(-0.5 * gap_error ** 2) - 1
+    gap_error = abs(distance - GOAL)
+    if linear_scale is None:
+        gap_score = 2 * math.exp(-0.5 * (gap_error / LEGACY_CAR_DISTANCE_SCALE_M) ** 2) - 1
+    else:
+        gap_score = 1.0 - 2.0 * min(gap_error / linear_scale, 1.0)
+    if band_weight:
+        band_score = 1.0 if gap_error <= TOLERANCE else -1.0
+        gap_score = (1.0 - band_weight) * gap_score + band_weight * band_score
     center_score = max(0.0, 1.0 - abs(bearing) / HORIZONTAL_FOV_HALF_RAD)
     distance_weight, center_weight = weights
     return distance_weight * gap_score + center_weight * center_score
@@ -217,7 +228,8 @@ def pillar_clearance(robot, center=(0.0, 0.0), body_half_size=CHASSIS_HALF_SIZE)
 
 
 def clearance_settings(stage, tracking_reward, enabled, threshold, maximum, *, remove_pillar=False):
-    legacy_c1 = stage == "C1" and tracking_reward == "legacy-car" and not remove_pillar
+    legacy_c1 = (stage == "C1" and not remove_pillar
+                 and tracking_reward in ("legacy-car", "legacy-car-band", "legacy-car-linear-band"))
     if threshold is None:
         threshold = C1_LEGACY_CLEARANCE_THRESHOLD_M if legacy_c1 else CLEARANCE_THRESHOLD_M
     if maximum is None:
@@ -277,6 +289,7 @@ class GazeboTracking(gym.Env):
     camera_x = 0.50
     collision_half_size = CHASSIS_HALF_SIZE
     neutral_action = (-1.0, 0.0)
+    longitudinal_limit_m = 8.65
     reset_attempts = 4
 
     def __init__(self, template, directory, stage="A", record=False, rtf=8, penalize_clearance=False,
@@ -441,14 +454,29 @@ class GazeboTracking(gym.Env):
         if not publisher.publish(twist):
             raise RuntimeError("Gazebo actuator message was not published")
 
-    def _teleport(self, start, target):
+    @property
+    def pillar_centers(self):
+        return (self.pillar_center,)
+
+    def _teleport(self, start, target, *, pillars=()):
         pair = Pose_V()
-        for name, pose in (("pursuer", start), ("target", target)):
+        for name, pose in (("pursuer", start), ("target", target), *pillars):
             msg = pair.pose.add(name=name)
             msg.position.x, msg.position.y, msg.position.z = pose.x, pose.y, self.spawn_z
             msg.orientation.z = math.sin(pose.yaw / 2)
             msg.orientation.w = math.cos(pose.yaw / 2)
         self.request("/world/one_pillar/set_pose_vector", pair)
+
+    def c1_layout(self, rng, seed):
+        self.route_side = self.fixed_route_side
+        if self.route_side is None:
+            self.route_side = (1 if seed % 2 == 0 else -1) if seed is not None else int(rng.choice((-1, 1)))
+        side = self.route_side
+        start = Pose(side * rng.uniform(0.20, 0.42), rng.uniform(-6.1, -5.7) - C1_START_SETBACK_M,
+                     math.pi / 2 + side * rng.uniform(0.02, 0.06))
+        target = Pose(side * rng.uniform(1.30, 1.46), rng.uniform(-2.60, -2.35) - C1_START_SETBACK_M,
+                      math.pi / 2)
+        return start, target, ()
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
@@ -458,16 +486,10 @@ class GazeboTracking(gym.Env):
         self.previous_action = np.array(self.neutral_action, dtype=np.float32)
         self.target_speeds = rng.uniform(0.60, 0.95, 4)
         self.turn = float(rng.choice([-1, 1]) * rng.uniform(0.11, 0.20))
+        pillars = ()
         if self.stage == "C1":
-            self.route_side = self.fixed_route_side
-            if self.route_side is None:
-                self.route_side = (1 if seed % 2 == 0 else -1) if seed is not None else int(rng.choice((-1, 1)))
-            side = self.route_side
-            start = Pose(side * rng.uniform(0.20, 0.42), rng.uniform(-6.1, -5.7) - C1_START_SETBACK_M,
-                         math.pi / 2 + side * rng.uniform(0.02, 0.06))
-            target = Pose(side * rng.uniform(1.30, 1.46), rng.uniform(-2.60, -2.35) - C1_START_SETBACK_M,
-                          math.pi / 2)
             self.duration = 13 * CONTROL_HZ
+            start, target, pillars = self.c1_layout(rng, seed)
         elif self.stage == "C":
             start = Pose(rng.uniform(-3.8, -3.2), rng.uniform(-1.8, -1.4), rng.uniform(0.10, 0.24))
             target = Pose(rng.uniform(1.65, 1.95), rng.uniform(-2.6, -2.15), math.pi / 2)
@@ -481,7 +503,7 @@ class GazeboTracking(gym.Env):
             self.drive(self.pursuer, 0, 0)
             self.drive(self.target, 0, 0)
             self.advance((4 if attempt == 0 else 10) * PHYSICS_STEPS)
-            self._teleport(start, target)
+            self._teleport(start, target, pillars=pillars)
             pursuer, target_pose, _ = self.settle_after_teleport()
             if self.settled(start, pursuer) and self.settled(target, target_pose):
                 break
@@ -511,7 +533,8 @@ class GazeboTracking(gym.Env):
         cy = pursuer.y + self.camera_x * math.sin(pursuer.yaw)
         horizontal, in_view = self.target_in_camera(pursuer, target, cx, cy)
         occluded = (self.stage in PILLAR_STAGES and not self.remove_pillar
-                    and blocked_by_pillar(cx, cy, target.x, target.y, self.pillar_center))
+                    and any(blocked_by_pillar(cx, cy, target.x, target.y, center)
+                            for center in self.pillar_centers))
         visible = in_view and not occluded
         valid = visible and abs(distance - GOAL) <= TOLERANCE and not collided
         info = {"time": self.elapsed * DT, "distance": distance, "bearing": horizontal,
@@ -521,8 +544,11 @@ class GazeboTracking(gym.Env):
         if self.stage == "C1":
             half_x, half_y = self.collision_half_size
             rear_y = pursuer.y - half_x * abs(math.sin(pursuer.yaw)) - half_y * abs(math.cos(pursuer.yaw))
-            info.update(route_side=self.route_side,
-                        past_pillar=rear_y > self.pillar_center[1] + PILLAR_HALF_SIZE[1])
+            centers = self.pillar_centers
+            passed = sum(rear_y > center_y + PILLAR_HALF_SIZE[1] for _, center_y in centers)
+            info.update(route_side=self.route_side, past_pillar=passed == len(centers))
+            if len(centers) > 1:
+                info["pillars_passed"] = passed
         return info
 
     def target_in_camera(self, pursuer, target, cx, cy):
@@ -538,7 +564,7 @@ class GazeboTracking(gym.Env):
         return {"v": v, "omega": w}
 
     def outside(self, pursuer):
-        return abs(pursuer.x) > 12.15 or abs(pursuer.y) > 8.65
+        return abs(pursuer.x) > 12.15 or abs(pursuer.y) > self.longitudinal_limit_m
 
     def advance_motion(self):
         return self.advance()
@@ -563,7 +589,11 @@ class GazeboTracking(gym.Env):
         elif self.tracking_reward == "valid-progress":
             reward, self.previous_potential = valid_progress_reward(info, self.previous_potential, failed)
         elif legacy_car:
-            reward = legacy_car_reward(info["visible"], info["distance"], info["bearing"], legacy_car_weights)
+            reward = legacy_car_reward(
+                info["visible"], info["distance"], info["bearing"], legacy_car_weights,
+                band_weight=LEGACY_CAR_DISTANCE_BAND_WEIGHTS.get(self.tracking_reward, 0.0),
+                linear_scale=LEGACY_CAR_LINEAR_DISTANCE_SCALES.get(self.tracking_reward),
+            )
         elif gap_error is not None:
             # Keep a gradient at large errors, where a narrow Gaussian saturates.
             gap_score = 1.0 - min(gap_error / GAP_SCALE, 3.0)
@@ -591,7 +621,8 @@ class GazeboTracking(gym.Env):
         # Keep the size of rewards per simulated second comparable to the 6 Hz run.
         reward *= 6 / CONTROL_HZ
         if self.stage in PILLAR_STAGES:
-            distance_to_pillar = pillar_clearance(pursuer, self.pillar_center, self.collision_half_size)
+            distance_to_pillar = min(pillar_clearance(pursuer, center, self.collision_half_size)
+                                     for center in self.pillar_centers)
             penalty = (clearance_penalty(distance_to_pillar, self.clearance_threshold, self.max_clearance_penalty)
                        if self.penalize_clearance else 0.0)
             info.update(pillar_clearance_m=distance_to_pillar, clearance_penalty=penalty)

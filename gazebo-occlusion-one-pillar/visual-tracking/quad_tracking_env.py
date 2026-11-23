@@ -321,6 +321,120 @@ class IdealQuadTracking(QuadTracking):
 
 
 
+class RandomizedC1QuadTracking(IdealQuadTracking):
+    """Sample pillar locations and a new slalom-and-bypass route on every reset."""
+
+    def __init__(self, *args, c1_pillar_count=1, **kwargs):
+        if c1_pillar_count not in (1, 2):
+            raise ValueError("Randomized C1 supports one or two pillars")
+        self.c1_pillar_count = c1_pillar_count
+        if c1_pillar_count == 2:
+            self.longitudinal_limit_m = 24.5
+        super().__init__(*args, **kwargs)
+
+    @property
+    def pillar_centers(self):
+        return self.episode_pillar_centers
+
+    def build_world(self, template, output, rtf):
+        super().build_world(template, output, rtf)
+        if self.c1_pillar_count == 1:
+            return
+        tree = ET.parse(output)
+        world = tree.getroot().find("world")
+        floor = world.find("model[@name='floor']")
+        for size in floor.findall(".//box/size"):
+            width, _, thickness = size.text.split()
+            size.text = f"{width} 52 {thickness}"
+        if not self.remove_pillar:
+            second = deepcopy(world.find("model[@name='pillar']"))
+            second.set("name", "pillar_2")
+            second.find("pose").text = f"0 4 {self.spawn_z} 0 0 0"
+            world.append(second)
+        tree.write(output, encoding="utf-8", xml_declaration=True)
+
+    def c1_layout(self, rng, seed):
+        self.route_side = int(rng.choice((-1, 1)))
+        pillar_x = float(rng.uniform(-0.55, 0.55))
+        pillar_y = float(rng.uniform(-1.75, -0.95))
+        self.pillar_center = (pillar_x, pillar_y)
+        start = Pose(rng.uniform(-0.18, 0.18), rng.uniform(-8.35, -8.05),
+                     math.pi / 2 + rng.uniform(-0.02, 0.02), self.spawn_z)
+        target = Pose(pillar_x + rng.uniform(-0.18, 0.18), rng.uniform(-5.15, -4.95),
+                      math.pi / 2, self.spawn_z)
+        lane_x = pillar_x + self.route_side * rng.uniform(1.30, 1.46)
+        wobble_side = rng.choice((-1.0, 1.0))
+        self.episode_pillar_centers = (self.pillar_center,)
+        second_bypass = None
+        if self.c1_pillar_count == 2:
+            self.duration = 30 * CONTROL_HZ
+            second_x = float(rng.uniform(-0.55, 0.55))
+            second_y = pillar_y + float(rng.uniform(5.0, 5.8))
+            self.episode_pillar_centers += ((second_x, second_y),)
+            second_lane_x = second_x - self.route_side * rng.uniform(1.30, 1.46)
+            second_bypass = (second_lane_x, second_y)
+        self.plan_target_route(target, lane_x, pillar_y, wobble_side, second_bypass)
+        names = ("pillar", "pillar_2")
+        pillars = () if self.remove_pillar else tuple(
+            (name, Pose(x, y, z=self.spawn_z)) for name, (x, y) in zip(names, self.pillar_centers)
+        )
+        return start, target, pillars
+
+    def plan_target_route(self, target, lane_x, pillar_y, wobble_side, second_bypass=None):
+        approach_end = pillar_y - 2.50
+        bypass_end = pillar_y - 1.28
+        approach_length = approach_end - target.y
+        amplitude = min(0.22, 0.22 * approach_length)
+
+        sections = np.minimum(np.arange(self.duration) // (3 * CONTROL_HZ), len(self.target_speeds) - 1)
+        travel = np.r_[0.0, np.cumsum(self.target_speeds[sections] * DT)]
+        # Parameterize the forward-only curve by distance so turns do not increase target speed.
+        y_length = float(travel[-1]) + 1.0
+        y = np.linspace(target.y, target.y + y_length, math.ceil(y_length / 0.005) + 1)
+        phase = np.clip((y - target.y) / approach_length, 0.0, 1.0)
+        blend = np.clip((y - approach_end) / (bypass_end - approach_end), 0.0, 1.0)
+        x = (target.x + wobble_side * amplitude * np.sin(math.tau * phase) ** 3
+             + (lane_x - target.x) * blend ** 2 * (3.0 - 2.0 * blend))
+
+        if second_bypass is not None:
+            second_lane_x, second_y = second_bypass
+            start_second = pillar_y + 1.28
+            end_second = second_y - 1.28
+            blend_second = np.clip((y - start_second) / (end_second - start_second), 0.0, 1.0)
+            x += (second_lane_x - lane_x) * blend_second ** 2 * (3.0 - 2.0 * blend_second)
+
+        arc = np.r_[0.0, np.cumsum(np.hypot(np.diff(x), np.diff(y)))]
+        path_x = np.interp(travel, arc, x)
+        path_y = np.interp(travel, arc, y)
+        dx, dy = np.diff(path_x), np.diff(path_y)
+        yaw = np.r_[target.yaw, np.arctan2(dy, dx)]
+        self.target_path = tuple(Pose(float(px), float(py), float(theta), self.spawn_z)
+                                 for px, py, theta in zip(path_x, path_y, yaw))
+        self.target_motion = tuple(zip(np.hypot(dx, dy) / DT, np.diff(yaw) / DT))
+
+    def target_command(self):
+        return self.target_motion[self.elapsed]
+
+    def advance_motion(self):
+        with self.condition:
+            _, pursuer, _ = self.poses[-1]
+        self._teleport(self.integrate_pose(pursuer, self.pursuer_velocity),
+                       self.target_path[self.elapsed + 1])
+        return self.advance()
+
+    def measure(self, pursuer, target, collided):
+        info = super().measure(pursuer, target, collided)
+        info.update(pillar_x=self.pillar_center[0], pillar_y=self.pillar_center[1])
+        if self.c1_pillar_count == 2:
+            second_x, second_y = self.pillar_centers[1]
+            target_clearance = min(pillar_clearance(target, center, (0.42, 0.42))
+                                   for center in self.pillar_centers)
+            if not self.remove_pillar and target_clearance <= 0.0:
+                raise RuntimeError("The scripted target trajectory overlapped a pillar")
+            info.update(pillar_2_x=second_x, pillar_2_y=second_y, target_clearance_m=target_clearance)
+        return info
+
+
 class TruthQuadTracking(IdealQuadTracking):
     """Use measured simulator state in place of the policy's camera input."""
 
@@ -330,9 +444,18 @@ class TruthQuadTracking(IdealQuadTracking):
         "pursuer_yaw_sin", "pursuer_yaw_cos", "target_visible",
     )
 
-    def __init__(self, *args, **kwargs):
+    target_motion_fields = ("target_speed_mps", "target_yaw_rate_radps")
+
+    @classmethod
+    def fields_for(cls, observe_target_motion):
+        return cls.fields + cls.target_motion_fields if observe_target_motion else cls.fields
+
+    def __init__(self, *args, observe_target_motion=False, **kwargs):
+        self.observe_target_motion = observe_target_motion
         super().__init__(*args, **kwargs)
-        self.observation_space = spaces.Box(-np.inf, np.inf, shape=(len(self.fields),), dtype=np.float32)
+        self.observation_space = spaces.Box(
+            -np.inf, np.inf, shape=(len(self.fields_for(observe_target_motion)),), dtype=np.float32,
+        )
 
     def measure(self, pursuer, target, collided):
         info = super().measure(pursuer, target, collided)
@@ -346,11 +469,15 @@ class TruthQuadTracking(IdealQuadTracking):
         has_pillar = self.stage == "C1" and not self.remove_pillar
         pillar_xy = relative(*self.pillar_center) if has_pillar else (0.0, 0.0)
         clearance = pillar_clearance(pursuer, self.pillar_center, self.collision_half_size) if has_pillar else 0.0
-        self.truth_observation = np.asarray(
-            (*relative(target.x, target.y), math.sin(yaw_error), math.cos(yaw_error),
-             *pillar_xy, clearance, float(has_pillar), sin_yaw, cos_yaw, float(info["visible"])),
-            dtype=np.float32,
+        values = (
+            *relative(target.x, target.y), math.sin(yaw_error), math.cos(yaw_error),
+            *pillar_xy, clearance, float(has_pillar), sin_yaw, cos_yaw, float(info["visible"]),
         )
+        if self.observe_target_motion:
+            # Ideal integration uses this velocity for the step that produced the observation.
+            speed, _, yaw_rate = self.target_velocity
+            values += (speed, yaw_rate)
+        self.truth_observation = np.asarray(values, dtype=np.float32)
         return info
 
     def observation(self):

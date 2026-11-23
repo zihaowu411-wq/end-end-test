@@ -21,6 +21,7 @@ from tracking_env import (
     COLLISION_PENALTY, CONTROL_HZ, DISTANCE_WEIGHT, FOV_MAX_PENALTY, FOV_PENALTY_START_DEG,
     GAMMA, GAP_SCALE, GOAL, HEIGHT, HORIZONTAL_FOV_HALF_DEG, IDEAL_VELOCITY_STAGES,
     IN_BAND_BONUS, LEGACY_CAR_ACTION_CHANGE_WEIGHT, LEGACY_CAR_DISTANCE_SCALE_M,
+    LEGACY_CAR_DISTANCE_BAND_WEIGHTS, LEGACY_CAR_LINEAR_DISTANCE_SCALES,
     LEGACY_CAR_LOST_REWARD, LEGACY_CAR_WEIGHTS,
     LOST_REWARD, LUO_HEADING_WEIGHT, LUO_POSITION_SCALE_M, LUO_REWARD_BASE,
     PILLAR_STAGES, STAGES, TOLERANCE, TRACKING_REWARDS,
@@ -133,12 +134,19 @@ def make_env(args, directory, index):
     pillar_x, pillar_y = args.mirrored_pillar or (0.0, 0.0)
     environment = GazeboTracking
     if args.vehicle == "quad":
-        from quad_tracking_env import IdealQuadTracking, QuadTracking, TruthQuadTracking
+        from quad_tracking_env import IdealQuadTracking, QuadTracking, RandomizedC1QuadTracking, TruthQuadTracking
         quad_environment = IdealQuadTracking if getattr(args, "ideal_velocity", False) else QuadTracking
-        if args.observation == "truth":
-            quad_environment = TruthQuadTracking
+        if args.randomized_c1:
+            quad_environment = partial(RandomizedC1QuadTracking, c1_pillar_count=args.c1_pillar_count)
+        elif args.observation == "truth":
+            quad_environment = partial(TruthQuadTracking, observe_target_motion=args.observe_target_motion)
         environment = partial(quad_environment, cube_target=getattr(args, "cube_target", False),
                               target_visual_scale=getattr(args, "target_visual_scale", 1.0))
+    info_keywords = ("collision", "past_pillar") if args.stage == "C1" else ()
+    if args.randomized_c1:
+        info_keywords += ("route_side", "pillar_x", "pillar_y")
+        if args.c1_pillar_count == 2:
+            info_keywords += ("pillar_2_x", "pillar_2_y", "pillars_passed")
     return Monitor(environment(args.world, instance, args.stage, rtf=args.rtf,
                                   penalize_clearance=args.clearance_penalty,
                                   clearance_threshold=args.clearance_threshold,
@@ -150,7 +158,7 @@ def make_env(args, directory, index):
                                   pillar_center=(side * pillar_x, pillar_y),
                                   fixed_route_side=side if args.mirrored_pillar else None),
                    str(instance / "episodes"),
-                   info_keywords=("collision", "past_pillar") if args.stage == "C1" else ())
+                   info_keywords=info_keywords)
 
 
 def train(args):
@@ -218,9 +226,14 @@ def train(args):
         config["reward"].update(fov_penalty_start_deg=FOV_PENALTY_START_DEG,
                                 fov_penalty_full_deg=HORIZONTAL_FOV_HALF_DEG,
                                 fov_max_penalty=FOV_MAX_PENALTY)
+    if args.tracking_reward in LEGACY_CAR_DISTANCE_BAND_WEIGHTS:
+        config["reward"]["distance_band_weight"] = LEGACY_CAR_DISTANCE_BAND_WEIGHTS[args.tracking_reward]
+    if args.tracking_reward in LEGACY_CAR_LINEAR_DISTANCE_SCALES:
+        config["reward"].update(distance_curve="linear",
+                                gap_scale=LEGACY_CAR_LINEAR_DISTANCE_SCALES[args.tracking_reward])
     if args.observation == "truth":
         from quad_tracking_env import TruthQuadTracking
-        config["observation_fields"] = TruthQuadTracking.fields
+        config["observation_fields"] = TruthQuadTracking.fields_for(args.observe_target_motion)
     (directory / "config.json").write_text(json.dumps(config, indent=2) + "\n")
     factories = [partial(make_env, args, directory, index) for index in range(args.environments)]
     env = DummyVecEnv(factories) if args.environments == 1 else SubprocVecEnv(factories, start_method="spawn")
@@ -277,6 +290,8 @@ if __name__ == "__main__":
     parser.add_argument("--camera-resolution", nargs=2, type=int, metavar=("WIDTH", "HEIGHT"),
                         default=(WIDTH, HEIGHT), help="Onboard RGB image size in pixels.")
     parser.add_argument("--observation", choices=("rgb", "truth"), default="rgb")
+    parser.add_argument("--observe-target-motion", action="store_true",
+                        help="Include target speed and yaw rate in truth observations.")
     parser.add_argument("--feedforward", action="store_true",
                         help="Use standard PPO with an MLP policy for truth observations.")
     parser.add_argument("--seed", type=int, default=17)
@@ -294,7 +309,20 @@ if __name__ == "__main__":
     parser.add_argument("--max-clearance-penalty", type=float)
     parser.add_argument("--mirrored-pillar", nargs=2, type=float, metavar=("ABS_X", "Y"),
                         help="Pair each C1 route side with a mirrored pillar center.")
+    parser.add_argument("--randomized-c1", action="store_true",
+                        help="Resample the pillar location and bypass side at each C1 reset.")
+    parser.add_argument("--c1-pillar-count", type=int, choices=(1, 2), default=1,
+                        help="Number of pillars in randomized C1.")
     args = parser.parse_args()
+    if args.c1_pillar_count != 1 and not args.randomized_c1:
+        parser.error("--c1-pillar-count 2 requires --randomized-c1")
+    if args.randomized_c1 and (args.stage != "C1" or args.vehicle != "quad"
+                               or not args.ideal_velocity or args.observation != "rgb"):
+        parser.error("--randomized-c1 requires RGB ideal-velocity quadrotor C1")
+    if args.randomized_c1 and args.mirrored_pillar is not None:
+        parser.error("--randomized-c1 selects each episode side independently of --mirrored-pillar")
+    if args.observe_target_motion and args.observation != "truth":
+        parser.error("--observe-target-motion requires --observation truth")
     if args.feedforward and args.observation != "truth":
         parser.error("--feedforward requires --observation truth")
     if args.rollout_steps is None:

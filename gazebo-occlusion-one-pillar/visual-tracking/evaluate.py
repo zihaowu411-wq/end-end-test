@@ -23,10 +23,12 @@ def evaluate(args):
     output.mkdir(parents=True, exist_ok=False)
     environment = GazeboTracking
     if args.vehicle == "quad":
-        from quad_tracking_env import IdealQuadTracking, QuadTracking, TruthQuadTracking
+        from quad_tracking_env import IdealQuadTracking, QuadTracking, RandomizedC1QuadTracking, TruthQuadTracking
         quad_environment = IdealQuadTracking if getattr(args, "ideal_velocity", False) else QuadTracking
-        if args.observation == "truth":
-            quad_environment = TruthQuadTracking
+        if args.randomized_c1:
+            quad_environment = partial(RandomizedC1QuadTracking, c1_pillar_count=args.c1_pillar_count)
+        elif args.observation == "truth":
+            quad_environment = partial(TruthQuadTracking, observe_target_motion=args.observe_target_motion)
         environment = partial(quad_environment, cube_target=getattr(args, "cube_target", False),
                               target_visual_scale=getattr(args, "target_visual_scale", 1.0))
     algorithm = PPO if args.feedforward else RecurrentPPO
@@ -107,12 +109,21 @@ def evaluate(args):
                     post_pillar_valid_rate=(sum(row["valid"] for row in after_pillar) / len(after_pillar)
                                             if after_pillar else None),
                 )
+                if args.randomized_c1:
+                    episodes[-1]["pillar_center_m"] = list(env.pillar_center)
+                    if args.c1_pillar_count == 2:
+                        episodes[-1].update(
+                            pillar_centers_m=[list(center) for center in env.pillar_centers],
+                            pillars_passed=max(row["pillars_passed"] for row in scores),
+                            min_target_clearance_m=min(row["target_clearance_m"] for row in scores),
+                        )
         with (output / "trace.csv").open("w", newline="") as file:
             writer = csv.DictWriter(file, fieldnames=trace[0])
             writer.writeheader()
             writer.writerows(trace)
         report = dict(
             algorithm=type(policy).__name__ if policy is not None else None,
+            observe_target_motion=args.observe_target_motion,
             vehicle=args.vehicle, ideal_velocity=getattr(args, "ideal_velocity", False),
             stage=args.stage, model=str(args.model), episodes=len(episodes), target_gap_m=GOAL,
             observation=args.observation, tracking_reward=args.tracking_reward, cube_target=getattr(args, "cube_target", False),
@@ -153,7 +164,11 @@ def evaluate(args):
         report["passed"] = report["valid_rate"] >= 0.8 and report["collisions"] == 0
         if args.stage == "C1":
             report["pillar_removed"] = args.remove_pillar
-            report["pillar_center_m"] = args.pillar_center
+            if args.randomized_c1:
+                report["randomized_c1"] = True
+                report["c1_pillar_count"] = args.c1_pillar_count
+            else:
+                report["pillar_center_m"] = args.pillar_center
             report["routes"] = {}
             for side in ("left", "right"):
                 routes = [row for row in episodes if row["side"] == side]
@@ -194,6 +209,8 @@ if __name__ == "__main__":
     parser.add_argument("--horizontal-fov-penalty", action="store_true",
                         help="Include the horizontal edge penalty used during training in the recorded rewards.")
     parser.add_argument("--observation", choices=("rgb", "truth"), default="rgb")
+    parser.add_argument("--observe-target-motion", action="store_true",
+                        help="Include target speed and yaw rate in truth observations.")
     parser.add_argument("--feedforward", action="store_true",
                         help="Use standard PPO with an MLP policy for truth observations.")
     parser.add_argument("--camera-resolution", nargs=2, type=int, default=(WIDTH, HEIGHT),
@@ -211,7 +228,20 @@ if __name__ == "__main__":
                         help="Keep C1 routes and measure clearance against the original pillar footprint.")
     parser.add_argument("--pillar-center", nargs=2, type=float, metavar=("X", "Y"), default=(0.0, 0.0),
                         help="Set the C1 pillar's center or reference footprint in world coordinates.")
+    parser.add_argument("--randomized-c1", action="store_true",
+                        help="Resample the pillar location and bypass side at each C1 reset.")
+    parser.add_argument("--c1-pillar-count", type=int, choices=(1, 2), default=1,
+                        help="Number of pillars in randomized C1.")
     args = parser.parse_args()
+    if args.c1_pillar_count != 1 and not args.randomized_c1:
+        parser.error("--c1-pillar-count 2 requires --randomized-c1")
+    if args.randomized_c1 and (args.stage != "C1" or args.vehicle != "quad"
+                               or not args.ideal_velocity or args.observation != "rgb"):
+        parser.error("--randomized-c1 requires RGB ideal-velocity quadrotor C1")
+    if args.randomized_c1 and tuple(args.pillar_center) != (0.0, 0.0):
+        parser.error("--randomized-c1 resamples the pillar position and cannot use --pillar-center")
+    if args.observe_target_motion and args.observation != "truth":
+        parser.error("--observe-target-motion requires --observation truth")
     if args.feedforward and args.observation != "truth":
         parser.error("--feedforward requires --observation truth")
     if args.observation == "truth" and (not args.ideal_velocity or args.blank_rgb):
