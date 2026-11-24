@@ -31,6 +31,7 @@ from tracking_env import (
     VALID_PROGRESS_IN_BAND_REWARD, VALID_PROGRESS_LOST_REWARD, VALID_PROGRESS_VISIBLE_REWARD,
     VISIBLE_GAP_BEARING_WEIGHT, VISIBLE_GAP_DISTANCE_WEIGHT, VISIBLE_GAP_LOST_REWARD, WIDTH, GazeboTracking,
     clearance_settings,
+    SAFE_EFFECTIVE_TRACKING, safe_tracking_reward_config,
 )
 
 
@@ -81,7 +82,7 @@ class Progress(BaseCallback):
             self.valid_steps[index] += info["valid"]
             self.visible_steps[index] += info["visible"]
             if done:
-                duration = self.planned_steps[index]
+                duration = info.get("episode_duration_steps", self.planned_steps[index])
                 valid_rate = self.valid_steps[index] / duration
                 self.episodes.append({
                     "return": info["episode"]["r"],
@@ -136,13 +137,25 @@ def make_env(args, directory, index):
     if args.vehicle == "quad":
         from quad_tracking_env import IdealQuadTracking, QuadTracking, RandomizedC1QuadTracking, TruthQuadTracking
         quad_environment = IdealQuadTracking if getattr(args, "ideal_velocity", False) else QuadTracking
-        if args.randomized_c1:
-            quad_environment = partial(RandomizedC1QuadTracking, c1_pillar_count=args.c1_pillar_count)
+        if args.stage == "C2":
+            from multi_pillar_env import MultiPillarQuadTracking
+            quad_environment = partial(
+                MultiPillarQuadTracking, c2_route=getattr(args, "c2_route", "mixed"),
+                transverse_clearance_shaping=getattr(args, "transverse_clearance_shaping", False),
+            )
+        elif args.randomized_c1:
+            quad_environment = partial(
+                RandomizedC1QuadTracking, c1_pillar_count=args.c1_pillar_count,
+                transverse_clearance_shaping=getattr(args, "transverse_clearance_shaping", False),
+                smooth_c1_route=getattr(args, "smooth_c1_route", False),
+            )
         elif args.observation == "truth":
             quad_environment = partial(TruthQuadTracking, observe_target_motion=args.observe_target_motion)
         environment = partial(quad_environment, cube_target=getattr(args, "cube_target", False),
                               target_visual_scale=getattr(args, "target_visual_scale", 1.0))
     info_keywords = ("collision", "past_pillar") if args.stage == "C1" else ()
+    if args.stage == "C2":
+        info_keywords = ("collision", "route_checkpoints_reached", "route_mode", "episode_duration_steps")
     if args.randomized_c1:
         info_keywords += ("route_side", "pillar_x", "pillar_y")
         if args.c1_pillar_count == 2:
@@ -155,6 +168,7 @@ def make_env(args, directory, index):
                                   luo_position_scale_m=args.luo_position_scale,
                                   penalize_horizontal_fov=args.horizontal_fov_penalty,
                                   camera_resolution=args.camera_resolution,
+                                  target_gap_m=getattr(args, "target_gap_m", GOAL),
                                   pillar_center=(side * pillar_x, pillar_y),
                                   fixed_route_side=side if args.mirrored_pillar else None),
                    str(instance / "episodes"),
@@ -170,13 +184,14 @@ def train(args):
     torch.set_num_interop_threads(1)
     directory = args.output.resolve()
     directory.mkdir(parents=True, exist_ok=False)
+    target_gap_m = getattr(args, "target_gap_m", GOAL)
     config = {key: str(value) if isinstance(value, Path) else value
               for key, value in vars(args).items()}
     algorithm = PPO if args.feedforward else RecurrentPPO
     config.update(algorithm=algorithm.__name__, n_steps=args.rollout_steps, batch_size=64, n_epochs=5, learning_rate=args.learning_rate, gamma=GAMMA,
                   gae_lambda=GAE_LAMBDA, clip_range=0.2, ent_coef=0.005, target_kl=0.035,
                   lstm_hidden_size=None if args.feedforward else 96,
-                  control_hz=CONTROL_HZ, camera_hz=CAMERA_HZ, gap_metres=GOAL,
+                  control_hz=CONTROL_HZ, camera_hz=CAMERA_HZ, gap_metres=target_gap_m,
                   reward=dict(distance_weight=DISTANCE_WEIGHT, center_weight=CENTER_WEIGHT,
                               gap_scale=GAP_SCALE, in_band_bonus=IN_BAND_BONUS,
                               approach_weight=APPROACH_WEIGHT, lost=LOST_REWARD,
@@ -231,6 +246,19 @@ def train(args):
     if args.tracking_reward in LEGACY_CAR_LINEAR_DISTANCE_SCALES:
         config["reward"].update(distance_curve="linear",
                                 gap_scale=LEGACY_CAR_LINEAR_DISTANCE_SCALES[args.tracking_reward])
+    if args.tracking_reward == SAFE_EFFECTIVE_TRACKING:
+        config["reward"] = safe_tracking_reward_config(target_gap_m)
+    if args.stage == "C2":
+        from multi_pillar_env import MultiPillarQuadTracking
+        config["target_route"] = MultiPillarQuadTracking.layout_config(args.c2_route)
+    if getattr(args, "smooth_c1_route", False):
+        from quad_tracking_env import RandomizedC1QuadTracking
+        config["target_route"] = RandomizedC1QuadTracking.smooth_route_config()
+    if getattr(args, "transverse_clearance_shaping", False):
+        from quad_tracking_env import TransverseClearanceShaping
+        if args.stage == "C2":
+            from multi_pillar_env import RouteClearanceShaping as TransverseClearanceShaping
+        config["reward"]["transverse_clearance_shaping"] = TransverseClearanceShaping.config()
     if args.observation == "truth":
         from quad_tracking_env import TruthQuadTracking
         config["observation_fields"] = TruthQuadTracking.fields_for(args.observe_target_motion)
@@ -311,6 +339,14 @@ if __name__ == "__main__":
                         help="Pair each C1 route side with a mirrored pillar center.")
     parser.add_argument("--randomized-c1", action="store_true",
                         help="Resample the pillar location and bypass side at each C1 reset.")
+    parser.add_argument("--target-gap-m", type=float, choices=(2.0, GOAL), default=GOAL,
+                        help="Use a 2 m following gap in smooth C1 or C2, or the usual 3 m gap.")
+    parser.add_argument("--c2-route", choices=("mixed", "weave", "figure-eight"), default="mixed",
+                        help="Select a C2 route type, or sample it independently each episode.")
+    parser.add_argument("--smooth-c1-route", action="store_true",
+                        help="Use a smooth approach, bypass and return to the main line in randomized single-pillar C1.")
+    parser.add_argument("--transverse-clearance-shaping", action="store_true",
+                        help="Shape progress to the observed target-side corridor in single-pillar C1.")
     parser.add_argument("--c1-pillar-count", type=int, choices=(1, 2), default=1,
                         help="Number of pillars in randomized C1.")
     args = parser.parse_args()
@@ -334,12 +370,35 @@ if __name__ == "__main__":
     if args.target_visual_scale != 1.0 and (args.vehicle != "quad" or args.cube_target):
         parser.error("--target-visual-scale requires an X3 quadrotor target")
     if args.ideal_velocity and (args.vehicle != "quad" or args.stage not in IDEAL_VELOCITY_STAGES):
-        parser.error("--ideal-velocity requires --vehicle quad and --stage A, B, or C1")
+        parser.error("--ideal-velocity requires --vehicle quad and stage A, B, C1, or C2")
     if args.observation == "truth" and not args.ideal_velocity:
         parser.error("--observation truth requires --ideal-velocity")
     if args.tracking_reward is None:
         use_legacy = args.ideal_velocity or (args.stage == "C1" and args.vehicle == "quad")
         args.tracking_reward = "legacy-car" if use_legacy else "original"
+    if args.stage == "C2" and (
+        args.vehicle != "quad" or not args.ideal_velocity or not args.cube_target
+        or args.observation != "rgb" or args.tracking_reward != SAFE_EFFECTIVE_TRACKING
+    ):
+        parser.error("C2 requires RGB ideal-velocity quadrotors, --cube-target and --tracking-reward safe-effective-tracking")
+    if args.target_gap_m != GOAL and (
+        not (args.smooth_c1_route or args.stage == "C2") or args.tracking_reward != SAFE_EFFECTIVE_TRACKING
+    ):
+        parser.error("--target-gap-m 2 requires smooth C1 or C2 and safe-effective-tracking")
+    if args.smooth_c1_route and (not args.randomized_c1 or args.c1_pillar_count != 1 or not args.cube_target):
+        parser.error("--smooth-c1-route requires randomized single-pillar C1 and --cube-target")
+    if args.c2_route != "mixed" and args.stage != "C2":
+        parser.error("--c2-route applies only to C2")
+    if args.transverse_clearance_shaping and (
+        not (args.stage == "C2" or (args.randomized_c1 and args.c1_pillar_count == 1))
+        or args.tracking_reward != SAFE_EFFECTIVE_TRACKING
+    ):
+        parser.error("--transverse-clearance-shaping requires randomized single-pillar C1 or C2 and safe-effective-tracking")
+    if args.tracking_reward == SAFE_EFFECTIVE_TRACKING and (
+        args.clearance_penalty or args.clearance_threshold is not None
+        or args.max_clearance_penalty is not None or args.horizontal_fov_penalty
+    ):
+        parser.error("safe-effective-tracking defines its own clearance and viewing terms")
     args.clearance_penalty, args.clearance_threshold, args.max_clearance_penalty = clearance_settings(
         args.stage, args.tracking_reward, args.clearance_penalty,
         args.clearance_threshold, args.max_clearance_penalty,

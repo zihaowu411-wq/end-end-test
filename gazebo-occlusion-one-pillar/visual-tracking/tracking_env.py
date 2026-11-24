@@ -72,7 +72,13 @@ LEGACY_CAR_DISTANCE_BAND_WEIGHTS = {"legacy-car-band": 0.10, "legacy-car-linear-
 LEGACY_CAR_LINEAR_DISTANCE_SCALES = {"legacy-car-linear-band": 3.0}
 LEGACY_CAR_LOST_REWARD = -0.35
 LEGACY_CAR_ACTION_CHANGE_WEIGHT = 0.025
-TRACKING_REWARDS = ("original", "luo", "luo-progress", "visible-gap", "valid-progress", *LEGACY_CAR_WEIGHTS)
+SAFE_EFFECTIVE_TRACKING = "safe-effective-tracking"
+SAFE_TRACKING_VALID_WEIGHT = 0.8
+SAFE_TRACKING_MARGIN_M = 0.30
+SAFE_TRACKING_MARGIN_FACTOR = 0.83
+SAFE_TRACKING_FULL_CLEARANCE_M = 2.0
+TRACKING_REWARDS = ("original", "luo", "luo-progress", "visible-gap", "valid-progress",
+                    SAFE_EFFECTIVE_TRACKING, *LEGACY_CAR_WEIGHTS)
 COLLISION_PENALTY = 5.0
 CLEARANCE_THRESHOLD_M = 0.50
 MAX_CLEARANCE_PENALTY = 0.18
@@ -80,8 +86,8 @@ C1_LEGACY_CLEARANCE_THRESHOLD_M = 2.0
 C1_LEGACY_MAX_CLEARANCE_PENALTY = 0.8
 PILLAR_HALF_SIZE = (0.675, 0.725)
 CHASSIS_HALF_SIZE = (0.62, 0.315)
-IDEAL_VELOCITY_STAGES = ("A", "B", "C1")
-PILLAR_STAGES = ("C", "C1")
+IDEAL_VELOCITY_STAGES = ("A", "B", "C1", "C2")
+PILLAR_STAGES = ("C", "C1", "C2")
 STAGES = ("A", "B", *PILLAR_STAGES)
 FRONT = "/occlusion/front/rgb"
 OVERHEAD = "/occlusion/overview/rgb"
@@ -180,9 +186,41 @@ def legacy_car_reward(visible, distance, bearing, weights=LEGACY_CAR_WEIGHTS["le
     return distance_weight * gap_score + center_weight * center_score
 
 
-def blocked_by_pillar(x1, y1, x2, y2, center=(0.0, 0.0)):
+def safe_tracking_clearance_factor(clearance):
+    if clearance < SAFE_TRACKING_MARGIN_M:
+        return SAFE_TRACKING_MARGIN_FACTOR * max(clearance, 0.0) / SAFE_TRACKING_MARGIN_M
+    fraction = (clearance - SAFE_TRACKING_MARGIN_M) / (SAFE_TRACKING_FULL_CLEARANCE_M - SAFE_TRACKING_MARGIN_M)
+    return SAFE_TRACKING_MARGIN_FACTOR + (1.0 - SAFE_TRACKING_MARGIN_FACTOR) * min(fraction, 1.0)
+
+
+def safe_effective_tracking_reward(visible, valid, distance, bearing, safety_factor, *, target_gap_m=GOAL):
+    if not visible:
+        return 0.0
+    distance_weight, center_weight = LEGACY_CAR_WEIGHTS["legacy-car"]
+    distance_score = math.exp(-0.5 * ((distance - target_gap_m) / LEGACY_CAR_DISTANCE_SCALE_M) ** 2)
+    center_score = max(0.0, 1.0 - abs(bearing) / HORIZONTAL_FOV_HALF_RAD)
+    score = distance_weight * distance_score + center_weight * center_score
+    tracking = SAFE_TRACKING_VALID_WEIGHT * valid + (1.0 - SAFE_TRACKING_VALID_WEIGHT) * score
+    return (6 / CONTROL_HZ) * tracking * safety_factor
+
+
+def safe_tracking_reward_config(target_gap_m=GOAL):
+    distance_weight, center_weight = LEGACY_CAR_WEIGHTS["legacy-car"]
+    return dict(
+        valid_tracking_weight=SAFE_TRACKING_VALID_WEIGHT,
+        smooth_tracking_weight=1.0 - SAFE_TRACKING_VALID_WEIGHT,
+        distance_weight=distance_weight, center_weight=center_weight,
+        gap_band_m=[target_gap_m - TOLERANCE, target_gap_m + TOLERANCE],
+        gap_scale_m=LEGACY_CAR_DISTANCE_SCALE_M, bearing_scale_deg=HORIZONTAL_FOV_HALF_DEG,
+        step_scale=6 / CONTROL_HZ, lost=0.0, collision=-COLLISION_PENALTY,
+        clearance_factor_knots=[[0.0, 0.0], [SAFE_TRACKING_MARGIN_M, SAFE_TRACKING_MARGIN_FACTOR],
+                                [SAFE_TRACKING_FULL_CLEARANCE_M, 1.0]],
+    )
+
+
+def blocked_by_pillar(x1, y1, x2, y2, center=(0.0, 0.0), *, pillar_half_size=PILLAR_HALF_SIZE):
     enter, leave = 0.0, 1.0
-    for start, end, half, offset in zip((x1, y1), (x2, y2), PILLAR_HALF_SIZE, center):
+    for start, end, half, offset in zip((x1, y1), (x2, y2), pillar_half_size, center):
         start, end = start - offset, end - offset
         delta = end - start
         if abs(delta) < 1e-9:
@@ -196,10 +234,11 @@ def blocked_by_pillar(x1, y1, x2, y2, center=(0.0, 0.0)):
     return True
 
 
-def pillar_clearance(robot, center=(0.0, 0.0), body_half_size=CHASSIS_HALF_SIZE):
+def pillar_clearance(robot, center=(0.0, 0.0), body_half_size=CHASSIS_HALF_SIZE, *,
+                     pillar_half_size=PILLAR_HALF_SIZE):
     """Planar separation of the SDF chassis collision box and the pillar."""
     robot = Pose(robot.x - center[0], robot.y - center[1], robot.yaw)
-    pillar_x, pillar_y = PILLAR_HALF_SIZE
+    pillar_x, pillar_y = pillar_half_size
     body_x, body_y = body_half_size
     c, s = math.cos(robot.yaw), math.sin(robot.yaw)
     # Separating-axis test over the normals of both rectangles.
@@ -228,6 +267,8 @@ def pillar_clearance(robot, center=(0.0, 0.0), body_half_size=CHASSIS_HALF_SIZE)
 
 
 def clearance_settings(stage, tracking_reward, enabled, threshold, maximum, *, remove_pillar=False):
+    if tracking_reward == SAFE_EFFECTIVE_TRACKING:
+        return False, SAFE_TRACKING_FULL_CLEARANCE_M, 0.0
     legacy_c1 = (stage == "C1" and not remove_pillar
                  and tracking_reward in ("legacy-car", "legacy-car-band", "legacy-car-linear-band"))
     if threshold is None:
@@ -296,8 +337,13 @@ class GazeboTracking(gym.Env):
                  remove_pillar=False, pillar_center=(0.0, 0.0), clearance_threshold=None,
                  fixed_route_side=None, max_clearance_penalty=None,
                  tracking_reward="original", luo_position_scale_m=LUO_POSITION_SCALE_M,
-                 penalize_horizontal_fov=False, camera_resolution=(WIDTH, HEIGHT)):
+                 penalize_horizontal_fov=False, camera_resolution=(WIDTH, HEIGHT), target_gap_m=GOAL):
         super().__init__()
+        if not math.isfinite(target_gap_m) or target_gap_m <= TOLERANCE:
+            raise ValueError("Target gap must be finite and greater than the distance tolerance")
+        if target_gap_m != GOAL and tracking_reward != SAFE_EFFECTIVE_TRACKING:
+            raise ValueError("Changing the target gap requires safe-effective-tracking")
+        self.target_gap_m = target_gap_m
         self.camera_resolution = tuple(camera_resolution)
         width, height = self.camera_resolution
         self.observation_space = gym.spaces.Box(0, 255, shape=(3, height, width), dtype=np.uint8)
@@ -487,7 +533,9 @@ class GazeboTracking(gym.Env):
         self.target_speeds = rng.uniform(0.60, 0.95, 4)
         self.turn = float(rng.choice([-1, 1]) * rng.uniform(0.11, 0.20))
         pillars = ()
-        if self.stage == "C1":
+        if self.stage == "C2":
+            start, target, pillars = self.c2_layout(rng)
+        elif self.stage == "C1":
             self.duration = 13 * CONTROL_HZ
             start, target, pillars = self.c1_layout(rng, seed)
         elif self.stage == "C":
@@ -510,7 +558,7 @@ class GazeboTracking(gym.Env):
         else:
             raise RuntimeError(f"Vehicles failed to settle at reset: {start} → {pursuer}, {target} → {target_pose}")
         info = self.measure(pursuer, target_pose, False)
-        self.previous_gap_error = abs(info["distance"] - GOAL) if info["visible"] else None
+        self.previous_gap_error = abs(info["distance"] - self.target_gap_m) if info["visible"] else None
         if self.tracking_reward == "valid-progress":
             self.previous_potential = valid_progress_potential(info)
         return self.observation(), info
@@ -527,16 +575,23 @@ class GazeboTracking(gym.Env):
         turn = self.turn if self.stage == "B" and turn_starts <= self.elapsed < 6 * CONTROL_HZ else 0.0
         return self.target_speeds[section], turn
 
+    def target_occluded(self, cx, cy, target):
+        return any(blocked_by_pillar(cx, cy, target.x, target.y, center)
+                   for center in self.pillar_centers)
+
+    def minimum_pillar_clearance(self, pursuer):
+        return min(pillar_clearance(pursuer, center, self.collision_half_size)
+                   for center in self.pillar_centers)
+
     def measure(self, pursuer, target, collided):
         distance = math.hypot(target.x - pursuer.x, target.y - pursuer.y)
         cx = pursuer.x + self.camera_x * math.cos(pursuer.yaw)
         cy = pursuer.y + self.camera_x * math.sin(pursuer.yaw)
         horizontal, in_view = self.target_in_camera(pursuer, target, cx, cy)
         occluded = (self.stage in PILLAR_STAGES and not self.remove_pillar
-                    and any(blocked_by_pillar(cx, cy, target.x, target.y, center)
-                            for center in self.pillar_centers))
+                    and self.target_occluded(cx, cy, target))
         visible = in_view and not occluded
-        valid = visible and abs(distance - GOAL) <= TOLERANCE and not collided
+        valid = visible and abs(distance - self.target_gap_m) <= TOLERANCE and not collided
         info = {"time": self.elapsed * DT, "distance": distance, "bearing": horizontal,
                 "visible": visible, "occluded": occluded, "valid": valid, "collision": collided,
                 "x": pursuer.x, "y": pursuer.y, "target_x": target.x, "target_y": target.y,
@@ -579,6 +634,22 @@ class GazeboTracking(gym.Env):
         info = self.measure(pursuer, target, collided)
         info.update(command, target_speed=target_v)
         failed = collided or self.outside(pursuer)
+        pillar_distance = None
+        if self.stage in PILLAR_STAGES:
+            pillar_distance = self.minimum_pillar_clearance(pursuer)
+        if self.tracking_reward == SAFE_EFFECTIVE_TRACKING:
+            factor = 1.0 if pillar_distance is None or self.remove_pillar else safe_tracking_clearance_factor(pillar_distance)
+            info["safety_factor"] = factor
+            if pillar_distance is not None:
+                info.update(pillar_clearance_m=pillar_distance, clearance_penalty=0.0)
+            if failed:
+                info["valid"] = False
+            reward = -COLLISION_PENALTY if failed else safe_effective_tracking_reward(
+                info["visible"], info["valid"], info["distance"], info["bearing"], factor,
+                target_gap_m=self.target_gap_m,
+            )
+            return self.observation(), reward, failed, not failed and self.elapsed >= self.duration, info
+
         gap_error = abs(info["distance"] - GOAL) if info["visible"] else None
         legacy_car_weights = LEGACY_CAR_WEIGHTS.get(self.tracking_reward)
         legacy_car = legacy_car_weights is not None
@@ -620,12 +691,10 @@ class GazeboTracking(gym.Env):
         self.previous_action = action
         # Keep the size of rewards per simulated second comparable to the 6 Hz run.
         reward *= 6 / CONTROL_HZ
-        if self.stage in PILLAR_STAGES:
-            distance_to_pillar = min(pillar_clearance(pursuer, center, self.collision_half_size)
-                                     for center in self.pillar_centers)
-            penalty = (clearance_penalty(distance_to_pillar, self.clearance_threshold, self.max_clearance_penalty)
+        if pillar_distance is not None:
+            penalty = (clearance_penalty(pillar_distance, self.clearance_threshold, self.max_clearance_penalty)
                        if self.penalize_clearance else 0.0)
-            info.update(pillar_clearance_m=distance_to_pillar, clearance_penalty=penalty)
+            info.update(pillar_clearance_m=pillar_distance, clearance_penalty=penalty)
             reward -= penalty
         if failed:
             info["valid"] = False

@@ -1,7 +1,7 @@
 from PIL import Image, ImageDraw, ImageFont
 import subprocess
 
-from tracking_env import CONTROL_HZ, GOAL, TOLERANCE
+from tracking_env import CONTROL_HZ, TOLERANCE
 
 RESAMPLING = getattr(Image, "Resampling", Image)
 
@@ -36,10 +36,11 @@ class Video:
         seconds = env.duration / CONTROL_HZ
         chart_x = lambda time: left + (right - left) * time / seconds
         draw.rectangle((left, top, right, bottom), fill="#fcfcf9", outline="#899593")
-        draw.rectangle((left + 1, chart_y(GOAL + TOLERANCE), right - 1, chart_y(GOAL - TOLERANCE)),
+        goal = env.target_gap_m
+        draw.rectangle((left + 1, chart_y(goal + TOLERANCE), right - 1, chart_y(goal - TOLERANCE)),
                        fill="#d7eacb")
-        draw.line((left, chart_y(GOAL), right, chart_y(GOAL)), fill="#4b7e60", width=1)
-        for gap in (0, GOAL, ceiling):
+        draw.line((left, chart_y(goal), right, chart_y(goal)), fill="#4b7e60", width=1)
+        for gap in (0, goal, ceiling):
             draw.text((54, chart_y(gap) - 9), str(gap), fill="#293733", font=self.small)
         for t in (0, int(seconds / 2), int(seconds)):
             draw.text((chart_x(t) - 9, bottom + 7), f"{t}s", fill="#293733", font=self.small)

@@ -1,4 +1,5 @@
 from copy import deepcopy
+from dataclasses import replace
 import math
 from pathlib import Path
 import xml.etree.ElementTree as ET
@@ -8,6 +9,8 @@ import numpy as np
 from gz.msgs10.twist_pb2 import Twist
 
 from tracking_env import (
+    PILLAR_HALF_SIZE,
+    GAMMA, GOAL,
     CONTACT, CONTROL_HZ, DT, GazeboTracking, HORIZONTAL_FOV_HALF_RAD, IDEAL_VELOCITY_STAGES,
     Pose, pillar_clearance, write_world,
 )
@@ -321,16 +324,114 @@ class IdealQuadTracking(QuadTracking):
 
 
 
-class RandomizedC1QuadTracking(IdealQuadTracking):
-    """Sample pillar locations and a new slalom-and-bypass route on every reset."""
+class TransverseClearanceShaping:
+    """Shape the distance to the target's observed side of an obstacle's lateral envelope."""
 
-    def __init__(self, *args, c1_pillar_count=1, **kwargs):
+    gain = 1.0
+    lookahead_m = 4.5
+    side_confirmation_m = 0.20
+    safety_margin_m = 0.10
+
+    @classmethod
+    def config(cls):
+        return dict(gain=cls.gain, lookahead_m=cls.lookahead_m,
+                    side_confirmation_m=cls.side_confirmation_m,
+                    safety_margin_m=cls.safety_margin_m,
+                    reference_frame="initial_pursuer_heading",
+                    terminal_potential=0.0, time_limit_is_terminal=True)
+
+    def __init__(self, yaw, obstacle_center, obstacle_half_size, body_radius, *, obstacle_yaw=0.0):
+        self.forward = (math.cos(yaw), math.sin(yaw))
+        self.left = (-self.forward[1], self.forward[0])
+        self.center = obstacle_center
+        local_left = (-math.sin(yaw-obstacle_yaw), math.cos(yaw-obstacle_yaw))
+        self.obstacle_half_width = sum(abs(axis) * half for axis, half in zip(local_left, obstacle_half_size))
+        self.safe_half_width = self.obstacle_half_width + body_radius + self.safety_margin_m
+        self.side = 0
+        self.weight = 0.0
+        self.value = 0.0
+
+    def project(self, x, y, axis):
+        return (x - self.center[0]) * axis[0] + (y - self.center[1]) * axis[1]
+
+    def step(self, info, finished, *, allow_confirmation=True):
+        ahead = -self.project(info["x"], info["y"], self.forward)
+        if not finished and allow_confirmation and info["visible"] and 0.0 < ahead < self.lookahead_m:
+            target_offset = self.project(info["target_x"], info["target_y"], self.left)
+            confirmation = (abs(target_offset) - self.obstacle_half_width) / self.side_confirmation_m
+            if confirmation > 0:
+                observed_side = 1 if target_offset > 0 else -1
+                if self.side in (0, observed_side):
+                    self.side = observed_side
+                    self.weight = max(self.weight, min(1.0, confirmation))
+
+        lateral_position = self.project(info["x"], info["y"], self.left)
+        gap = max(0.0, self.safe_half_width - self.side * lateral_position) if self.side else 0.0
+        next_value = 0.0 if finished else -self.gain * self.weight * gap
+        added_reward = GAMMA * next_value - self.value
+        self.value = next_value
+        info.update(transverse_shaping_reward=added_reward, transverse_potential=next_value,
+                    transverse_gap_m=gap, transverse_side=self.side, transverse_side_weight=self.weight)
+        return added_reward
+
+
+class RandomizedC1QuadTracking(IdealQuadTracking):
+    """Sample pillar locations and a bypass route on every reset."""
+
+    smooth_duration_s = 22
+    smooth_start_distance_m = 7.30
+    smooth_entry_length_m = 5.0
+    smooth_pass_distance_m = 1.55
+    smooth_exit_length_m = 5.3
+    smooth_speed_min_mps = 0.70
+    smooth_speed_max_mps = 0.80
+
+    @classmethod
+    def smooth_route_config(cls):
+        return dict(duration_s=cls.smooth_duration_s, nominal_target_start_distance_m=cls.smooth_start_distance_m,
+                    entry_length_m=cls.smooth_entry_length_m, pass_distance_m=cls.smooth_pass_distance_m,
+                    exit_length_m=cls.smooth_exit_length_m,
+                    target_speed_mps=[cls.smooth_speed_min_mps, cls.smooth_speed_max_mps])
+
+    def __init__(self, *args, c1_pillar_count=1, transverse_clearance_shaping=False,
+                 smooth_c1_route=False, **kwargs):
+        if smooth_c1_route and (c1_pillar_count != 1 or not kwargs.get("cube_target", False)):
+            raise ValueError("The smooth C1 route requires one pillar and the cube target")
+        self.smooth_c1_route = smooth_c1_route
+        if transverse_clearance_shaping and c1_pillar_count != 1:
+            raise ValueError("Transverse clearance shaping uses the single active obstacle in single-pillar C1")
+        self.transverse_clearance_shaping = transverse_clearance_shaping
+        self.transverse_shaping = None
         if c1_pillar_count not in (1, 2):
             raise ValueError("Randomized C1 supports one or two pillars")
         self.c1_pillar_count = c1_pillar_count
-        if c1_pillar_count == 2:
+        if smooth_c1_route:
+            self.longitudinal_limit_m = 15.0
+        elif c1_pillar_count == 2:
             self.longitudinal_limit_m = 24.5
         super().__init__(*args, **kwargs)
+
+    def reset(self, *, seed=None, options=None):
+        obs, info = super().reset(seed=seed, options=options)
+        if self.transverse_clearance_shaping and not self.remove_pillar:
+            self.transverse_shaping = TransverseClearanceShaping(
+                info["yaw"], self.pillar_center, PILLAR_HALF_SIZE, math.hypot(*self.collision_half_size),
+            )
+        return obs, info
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = super().step(action)
+        if self.transverse_clearance_shaping:
+            finished = terminated or truncated
+            info["unshaped_reward"] = reward
+            if self.transverse_shaping is not None:
+                reward += self.transverse_shaping.step(info, finished)
+            if truncated:
+                # The C1 deadline ends the finite-horizon objective. SB3 must not
+                # bootstrap a continuation value after the terminal potential was zeroed.
+                info["time_limit"] = True
+            return obs, reward, finished, False, info
+        return obs, reward, terminated, truncated, info
 
     @property
     def pillar_centers(self):
@@ -338,15 +439,16 @@ class RandomizedC1QuadTracking(IdealQuadTracking):
 
     def build_world(self, template, output, rtf):
         super().build_world(template, output, rtf)
-        if self.c1_pillar_count == 1:
+        if self.c1_pillar_count == 1 and not self.smooth_c1_route:
             return
         tree = ET.parse(output)
         world = tree.getroot().find("world")
         floor = world.find("model[@name='floor']")
+        floor_length = 32 if self.smooth_c1_route else 52
         for size in floor.findall(".//box/size"):
             width, _, thickness = size.text.split()
-            size.text = f"{width} 52 {thickness}"
-        if not self.remove_pillar:
+            size.text = f"{width} {floor_length} {thickness}"
+        if self.c1_pillar_count == 2 and not self.remove_pillar:
             second = deepcopy(world.find("model[@name='pillar']"))
             second.set("name", "pillar_2")
             second.find("pose").text = f"0 4 {self.spawn_z} 0 0 0"
@@ -373,7 +475,18 @@ class RandomizedC1QuadTracking(IdealQuadTracking):
             self.episode_pillar_centers += ((second_x, second_y),)
             second_lane_x = second_x - self.route_side * rng.uniform(1.30, 1.46)
             second_bypass = (second_lane_x, second_y)
-        self.plan_target_route(target, lane_x, pillar_y, wobble_side, second_bypass)
+        if self.smooth_c1_route:
+            self.duration = self.smooth_duration_s * CONTROL_HZ
+            shift_y = pillar_y - self.smooth_start_distance_m + 5.05
+            start = replace(start, y=start.y + shift_y)
+            target = replace(target, y=target.y + shift_y)
+            if self.target_gap_m != GOAL:
+                dx, dy = target.x - start.x, target.y - start.y
+                approach_fraction = (GOAL - self.target_gap_m) / math.hypot(dx, dy)
+                start = replace(start, x=start.x + dx * approach_fraction, y=start.y + dy * approach_fraction)
+            self.plan_smooth_target_route(target, lane_x, pillar_y)
+        else:
+            self.plan_target_route(target, lane_x, pillar_y, wobble_side, second_bypass)
         names = ("pillar", "pillar_2")
         pillars = () if self.remove_pillar else tuple(
             (name, Pose(x, y, z=self.spawn_z)) for name, (x, y) in zip(names, self.pillar_centers)
@@ -403,6 +516,28 @@ class RandomizedC1QuadTracking(IdealQuadTracking):
             blend_second = np.clip((y - start_second) / (end_second - start_second), 0.0, 1.0)
             x += (second_lane_x - lane_x) * blend_second ** 2 * (3.0 - 2.0 * blend_second)
 
+        self.set_target_path(target, x, y, travel)
+
+    def plan_smooth_target_route(self, target, lane_x, pillar_y):
+        speed = np.interp(self.target_speeds[0], (0.60, 0.95),
+                          (self.smooth_speed_min_mps, self.smooth_speed_max_mps))
+        travel = np.arange(self.duration + 1) * speed * DT
+        length = travel[-1] + 1.0
+        y = np.linspace(target.y, target.y + length, math.ceil(length / 0.005) + 1)
+        entry_start = pillar_y - self.smooth_pass_distance_m - self.smooth_entry_length_m
+        exit_start = pillar_y + self.smooth_pass_distance_m
+
+        def blend(start, length):
+            u = np.clip((y - start) / length, 0.0, 1.0)
+            return u**3 * (10.0 + u * (-15.0 + 6.0 * u))
+
+        # The quintic joins the main line and bypass lane with continuous
+        # heading and curvature. Sample by arc length for constant speed.
+        lateral_fraction = blend(entry_start, self.smooth_entry_length_m) - blend(exit_start, self.smooth_exit_length_m)
+        x = target.x + (lane_x - target.x) * lateral_fraction
+        self.set_target_path(target, x, y, travel)
+
+    def set_target_path(self, target, x, y, travel):
         arc = np.r_[0.0, np.cumsum(np.hypot(np.diff(x), np.diff(y)))]
         path_x = np.interp(travel, arc, x)
         path_y = np.interp(travel, arc, y)
@@ -425,13 +560,16 @@ class RandomizedC1QuadTracking(IdealQuadTracking):
     def measure(self, pursuer, target, collided):
         info = super().measure(pursuer, target, collided)
         info.update(pillar_x=self.pillar_center[0], pillar_y=self.pillar_center[1])
-        if self.c1_pillar_count == 2:
-            second_x, second_y = self.pillar_centers[1]
-            target_clearance = min(pillar_clearance(target, center, (0.42, 0.42))
+        if self.smooth_c1_route or self.c1_pillar_count == 2:
+            half_size = TARGET_CUBE_SIDE_M / 2 if self.smooth_c1_route else 0.42
+            target_clearance = min(pillar_clearance(target, center, (half_size, half_size))
                                    for center in self.pillar_centers)
             if not self.remove_pillar and target_clearance <= 0.0:
                 raise RuntimeError("The scripted target trajectory overlapped a pillar")
-            info.update(pillar_2_x=second_x, pillar_2_y=second_y, target_clearance_m=target_clearance)
+            info["target_clearance_m"] = target_clearance
+        if self.c1_pillar_count == 2:
+            second_x, second_y = self.pillar_centers[1]
+            info.update(pillar_2_x=second_x, pillar_2_y=second_y)
         return info
 
 
