@@ -377,16 +377,16 @@ if __name__ == "__main__":
         use_legacy = args.ideal_velocity or (args.stage == "C1" and args.vehicle == "quad")
         args.tracking_reward = "legacy-car" if use_legacy else "original"
     if args.stage == "C2" and (
-        args.vehicle != "quad" or not args.ideal_velocity or not args.cube_target
+        args.vehicle != "quad" or not args.ideal_velocity
         or args.observation != "rgb" or args.tracking_reward != SAFE_EFFECTIVE_TRACKING
     ):
-        parser.error("C2 requires RGB ideal-velocity quadrotors, --cube-target and --tracking-reward safe-effective-tracking")
+        parser.error("C2 requires RGB ideal-velocity quadrotors and --tracking-reward safe-effective-tracking")
     if args.target_gap_m != GOAL and (
         not (args.smooth_c1_route or args.stage == "C2") or args.tracking_reward != SAFE_EFFECTIVE_TRACKING
     ):
         parser.error("--target-gap-m 2 requires smooth C1 or C2 and safe-effective-tracking")
-    if args.smooth_c1_route and (not args.randomized_c1 or args.c1_pillar_count != 1 or not args.cube_target):
-        parser.error("--smooth-c1-route requires randomized single-pillar C1 and --cube-target")
+    if args.smooth_c1_route and (not args.randomized_c1 or args.c1_pillar_count != 1):
+        parser.error("--smooth-c1-route requires randomized single-pillar C1")
     if args.c2_route != "mixed" and args.stage != "C2":
         parser.error("--c2-route applies only to C2")
     if args.transverse_clearance_shaping and (

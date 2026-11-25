@@ -395,8 +395,8 @@ class RandomizedC1QuadTracking(IdealQuadTracking):
 
     def __init__(self, *args, c1_pillar_count=1, transverse_clearance_shaping=False,
                  smooth_c1_route=False, **kwargs):
-        if smooth_c1_route and (c1_pillar_count != 1 or not kwargs.get("cube_target", False)):
-            raise ValueError("The smooth C1 route requires one pillar and the cube target")
+        if smooth_c1_route and c1_pillar_count != 1:
+            raise ValueError("The smooth C1 route requires one pillar")
         self.smooth_c1_route = smooth_c1_route
         if transverse_clearance_shaping and c1_pillar_count != 1:
             raise ValueError("Transverse clearance shaping uses the single active obstacle in single-pillar C1")

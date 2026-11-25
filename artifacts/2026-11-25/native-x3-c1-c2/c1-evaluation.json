@@ -1,0 +1,509 @@
+{
+  "algorithm": "RecurrentPPO",
+  "observe_target_motion": false,
+  "vehicle": "quad",
+  "ideal_velocity": true,
+  "stage": "C1",
+  "model": "/root/autodl-tmp/results/rgb-c1-native-x3-128updates-20261125-122255-p1JZla/train/final.zip",
+  "episodes": 20,
+  "target_gap_m": 2.0,
+  "observation": "rgb",
+  "tracking_reward": "safe-effective-tracking",
+  "cube_target": false,
+  "target_visual_scale": 1.0,
+  "horizontal_fov_penalty": false,
+  "blank_rgb": false,
+  "constant_speed_mps": null,
+  "camera_hz": 20,
+  "control_hz": 20,
+  "camera_resolution": [
+    256,
+    144
+  ],
+  "gap_band_m": [
+    1.5,
+    2.5
+  ],
+  "valid_rate": 0.9706818181818182,
+  "visible_rate": 1.0,
+  "mean_gap_error_m": 0.22921474813662218,
+  "collisions": 0,
+  "early_ends": 0,
+  "results": [
+    {
+      "seed": 28400,
+      "return_": 123.18717141281076,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.19060841963892197,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "side": "right",
+      "passed_pillar": true,
+      "post_pillar_valid_rate": 1.0,
+      "pillar_center_m": [
+        -0.020762363150518492,
+        -1.3290562645595514
+      ]
+    },
+    {
+      "seed": 28401,
+      "return_": 121.70343166867923,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.3540533933776361,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "side": "right",
+      "passed_pillar": true,
+      "post_pillar_valid_rate": 1.0,
+      "pillar_center_m": [
+        0.3743881632091295,
+        -1.558048227687502
+      ]
+    },
+    {
+      "seed": 28402,
+      "return_": 120.78423818336503,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.23530174367562803,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "side": "left",
+      "passed_pillar": true,
+      "post_pillar_valid_rate": 1.0,
+      "pillar_center_m": [
+        0.3403518156111518,
+        -1.4814894192629549
+      ]
+    },
+    {
+      "seed": 28403,
+      "return_": 70.55519955336811,
+      "valid": 0.4659090909090909,
+      "visible": 1.0,
+      "gap_mae": 0.41343013277968915,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "side": "left",
+      "passed_pillar": true,
+      "post_pillar_valid_rate": 0.0,
+      "pillar_center_m": [
+        0.0956351526093715,
+        -1.6813704898372568
+      ]
+    },
+    {
+      "seed": 28404,
+      "return_": 124.3855256268786,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.20580950563135628,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "side": "right",
+      "passed_pillar": true,
+      "post_pillar_valid_rate": 1.0,
+      "pillar_center_m": [
+        0.3136878443234731,
+        -1.1113336219871877
+      ]
+    },
+    {
+      "seed": 28405,
+      "return_": 124.72122543075109,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.16150498426947205,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "side": "right",
+      "passed_pillar": true,
+      "post_pillar_valid_rate": 1.0,
+      "pillar_center_m": [
+        0.31865308761206146,
+        -1.342553422774463
+      ]
+    },
+    {
+      "seed": 28406,
+      "return_": 119.83305773026576,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.34767249571139586,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "side": "right",
+      "passed_pillar": true,
+      "post_pillar_valid_rate": 1.0,
+      "pillar_center_m": [
+        0.34407168386390075,
+        -1.099205484688309
+      ]
+    },
+    {
+      "seed": 28407,
+      "return_": 121.68979862193731,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.2768396111349255,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "side": "left",
+      "passed_pillar": true,
+      "post_pillar_valid_rate": 1.0,
+      "pillar_center_m": [
+        0.374497539337197,
+        -1.47901469060413
+      ]
+    },
+    {
+      "seed": 28408,
+      "return_": 124.72206879288332,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.13152768407617613,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "side": "right",
+      "passed_pillar": true,
+      "post_pillar_valid_rate": 1.0,
+      "pillar_center_m": [
+        0.447690764266785,
+        -0.9971374965355413
+      ]
+    },
+    {
+      "seed": 28409,
+      "return_": 125.01908992360131,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.1325655503667735,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "side": "right",
+      "passed_pillar": true,
+      "post_pillar_valid_rate": 1.0,
+      "pillar_center_m": [
+        -0.3363244077090596,
+        -1.3339175252253024
+      ]
+    },
+    {
+      "seed": 28410,
+      "return_": 124.17737263497486,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.2418598827969554,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "side": "left",
+      "passed_pillar": true,
+      "post_pillar_valid_rate": 1.0,
+      "pillar_center_m": [
+        -0.3756523704629266,
+        -1.6636968661515241
+      ]
+    },
+    {
+      "seed": 28411,
+      "return_": 120.84188231463648,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.06570987840640054,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "side": "left",
+      "passed_pillar": true,
+      "post_pillar_valid_rate": 1.0,
+      "pillar_center_m": [
+        -0.4841880790730922,
+        -0.9626368637905283
+      ]
+    },
+    {
+      "seed": 28412,
+      "return_": 122.13723063726334,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.2667991159153428,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "side": "left",
+      "passed_pillar": true,
+      "post_pillar_valid_rate": 1.0,
+      "pillar_center_m": [
+        -0.3049524805188656,
+        -1.0602580422635544
+      ]
+    },
+    {
+      "seed": 28413,
+      "return_": 116.27957600385811,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.14798982074258857,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "side": "left",
+      "passed_pillar": true,
+      "post_pillar_valid_rate": 1.0,
+      "pillar_center_m": [
+        0.5370809983319207,
+        -1.6170144728559372
+      ]
+    },
+    {
+      "seed": 28414,
+      "return_": 114.34087439620757,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.10064342696422944,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "side": "left",
+      "passed_pillar": true,
+      "post_pillar_valid_rate": 1.0,
+      "pillar_center_m": [
+        0.2788309069963083,
+        -1.5851607235231173
+      ]
+    },
+    {
+      "seed": 28415,
+      "return_": 120.55412794598354,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.2564034224103264,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "side": "right",
+      "passed_pillar": true,
+      "post_pillar_valid_rate": 1.0,
+      "pillar_center_m": [
+        -0.2346827757479783,
+        -1.3551534741254962
+      ]
+    },
+    {
+      "seed": 28416,
+      "return_": 125.09970173350082,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.09913825825830458,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "side": "right",
+      "passed_pillar": true,
+      "post_pillar_valid_rate": 1.0,
+      "pillar_center_m": [
+        0.41893000445078266,
+        -1.2944335293082605
+      ]
+    },
+    {
+      "seed": 28417,
+      "return_": 120.4404685199116,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.27776652555464043,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "side": "right",
+      "passed_pillar": true,
+      "post_pillar_valid_rate": 1.0,
+      "pillar_center_m": [
+        -0.533920774325802,
+        -1.423423935465445
+      ]
+    },
+    {
+      "seed": 28418,
+      "return_": 123.68528645111192,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.31237596646778354,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "side": "left",
+      "passed_pillar": true,
+      "post_pillar_valid_rate": 1.0,
+      "pillar_center_m": [
+        0.2962184130366464,
+        -1.2913572701307987
+      ]
+    },
+    {
+      "seed": 28419,
+      "return_": 115.65210884264215,
+      "valid": 0.9477272727272728,
+      "visible": 1.0,
+      "gap_mae": 0.36629514455389756,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "side": "right",
+      "passed_pillar": true,
+      "post_pillar_valid_rate": 0.8496732026143791,
+      "pillar_center_m": [
+        0.09593406091080492,
+        -1.6146975009629683
+      ]
+    }
+  ],
+  "occlusion_events": 0,
+  "reacquired": 0,
+  "reacquisition_rate": null,
+  "mean_reacquisition_s": null,
+  "gap_restored": 0,
+  "mean_gap_recovery_s": null,
+  "clearance_penalty_enabled": false,
+  "mean_episode_minimum_clearance_m": 0.24276759257578395,
+  "reward": {
+    "valid_tracking_weight": 0.8,
+    "smooth_tracking_weight": 0.19999999999999996,
+    "distance_weight": 0.7,
+    "center_weight": 0.3,
+    "gap_band_m": [
+      1.5,
+      2.5
+    ],
+    "gap_scale_m": 0.95,
+    "bearing_scale_deg": 35.0,
+    "step_scale": 0.3,
+    "lost": 0.0,
+    "collision": -5.0,
+    "clearance_factor_knots": [
+      [
+        0.0,
+        0.0
+      ],
+      [
+        0.3,
+        0.83
+      ],
+      [
+        2.0,
+        1.0
+      ]
+    ],
+    "transverse_clearance_shaping": {
+      "gain": 1.0,
+      "lookahead_m": 4.5,
+      "side_confirmation_m": 0.2,
+      "safety_margin_m": 0.1,
+      "reference_frame": "initial_pursuer_heading",
+      "terminal_potential": 0.0,
+      "time_limit_is_terminal": true
+    }
+  },
+  "target_route": {
+    "duration_s": 22,
+    "nominal_target_start_distance_m": 7.3,
+    "entry_length_m": 5.0,
+    "pass_distance_m": 1.55,
+    "exit_length_m": 5.3,
+    "target_speed_mps": [
+      0.7,
+      0.8
+    ]
+  },
+  "passed": true,
+  "pillar_removed": false,
+  "randomized_c1": true,
+  "c1_pillar_count": 1,
+  "routes": {
+    "left": {
+      "episodes": 9,
+      "passed_pillar": 9,
+      "valid_rate": 0.9406565656565655,
+      "collisions": 0
+    },
+    "right": {
+      "episodes": 11,
+      "passed_pillar": 11,
+      "valid_rate": 0.9952479338842974,
+      "collisions": 0
+    }
+  }
+}
