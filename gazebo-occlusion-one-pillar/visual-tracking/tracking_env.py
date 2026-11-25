@@ -504,11 +504,12 @@ class GazeboTracking(gym.Env):
     def pillar_centers(self):
         return (self.pillar_center,)
 
-    def _teleport(self, start, target, *, pillars=()):
+    def _teleport(self, start, target, *, pillars=(), use_pose_altitude=False):
         pair = Pose_V()
         for name, pose in (("pursuer", start), ("target", target), *pillars):
             msg = pair.pose.add(name=name)
-            msg.position.x, msg.position.y, msg.position.z = pose.x, pose.y, self.spawn_z
+            altitude = pose.z if use_pose_altitude else self.spawn_z
+            msg.position.x, msg.position.y, msg.position.z = pose.x, pose.y, altitude
             msg.orientation.z = math.sin(pose.yaw / 2)
             msg.orientation.w = math.cos(pose.yaw / 2)
         self.request("/world/one_pillar/set_pose_vector", pair)
@@ -523,6 +524,13 @@ class GazeboTracking(gym.Env):
         target = Pose(side * rng.uniform(1.30, 1.46), rng.uniform(-2.60, -2.35) - C1_START_SETBACK_M,
                       math.pi / 2)
         return start, target, ()
+
+    def tracking_start(self, rng):
+        x = rng.uniform(-6.0, -5.5)
+        y = rng.uniform(-1.0, 1.0)
+        start = Pose(x, y, rng.uniform(-0.22, 0.22))
+        target = Pose(x + rng.uniform(2.1, 4.9), y + rng.uniform(-0.85, 0.85))
+        return start, target
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
@@ -543,10 +551,7 @@ class GazeboTracking(gym.Env):
             target = Pose(rng.uniform(1.65, 1.95), rng.uniform(-2.6, -2.15), math.pi / 2)
             self.duration = 10 * CONTROL_HZ
         else:
-            x = rng.uniform(-6.0, -5.5)
-            y = rng.uniform(-1.0, 1.0)
-            start = Pose(x, y, rng.uniform(-0.22, 0.22))
-            target = Pose(x + rng.uniform(2.1, 4.9), y + rng.uniform(-0.85, 0.85))
+            start, target = self.tracking_start(rng)
         for attempt in range(self.reset_attempts):
             self.drive(self.pursuer, 0, 0)
             self.drive(self.target, 0, 0)
@@ -583,8 +588,11 @@ class GazeboTracking(gym.Env):
         return min(pillar_clearance(pursuer, center, self.collision_half_size)
                    for center in self.pillar_centers)
 
+    def tracking_distance(self, pursuer, target):
+        return math.hypot(target.x - pursuer.x, target.y - pursuer.y)
+
     def measure(self, pursuer, target, collided):
-        distance = math.hypot(target.x - pursuer.x, target.y - pursuer.y)
+        distance = self.tracking_distance(pursuer, target)
         cx = pursuer.x + self.camera_x * math.cos(pursuer.yaw)
         cy = pursuer.y + self.camera_x * math.sin(pursuer.yaw)
         horizontal, in_view = self.target_in_camera(pursuer, target, cx, cy)

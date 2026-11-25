@@ -26,7 +26,11 @@ def evaluate(args):
     if args.vehicle == "quad":
         from quad_tracking_env import IdealQuadTracking, QuadTracking, RandomizedC1QuadTracking, TruthQuadTracking
         quad_environment = IdealQuadTracking if getattr(args, "ideal_velocity", False) else QuadTracking
-        if args.stage == "C2":
+        if getattr(args, "free_flight_3d", False):
+            from quad_tracking_env import FreeFlightQuadTracking
+
+            quad_environment = FreeFlightQuadTracking
+        elif args.stage == "C2":
             from multi_pillar_env import MultiPillarQuadTracking
             quad_environment = partial(
                 MultiPillarQuadTracking, c2_route=getattr(args, "c2_route", "mixed"),
@@ -60,6 +64,8 @@ def evaluate(args):
     try:
         if policy is not None and policy.observation_space != env.observation_space:
             raise ValueError("Checkpoint observation space does not match the evaluation environment")
+        if policy is not None and policy.action_space != env.action_space:
+            raise ValueError("Checkpoint action space does not match the evaluation environment")
         if args.video:
             from replay import Video
             video = Video(output / "tracking.mp4", args.stage)
@@ -112,6 +118,8 @@ def evaluate(args):
                 occlusion_events=count_lost, reacquired=len(time_to_visible),
                 recovery_times_s=time_to_visible, gap_recovery_times_s=time_to_gap,
             ))
+            if getattr(args, "free_flight_3d", False):
+                episodes[-1]["altitude_mae_m"] = float(np.mean([abs(row["z"] - row["target_z"]) for row in scores]))
             if args.stage == "C1":
                 after_pillar = [row for row in scores if row["past_pillar"]]
                 episodes[-1].update(
@@ -158,6 +166,9 @@ def evaluate(args):
             early_ends=sum(row["ended_early"] for row in episodes),
             results=episodes,
         )
+        if getattr(args, "free_flight_3d", False):
+            report["flight"] = env.free_flight_config()
+            report["mean_altitude_error_m"] = float(np.mean([row["altitude_mae_m"] for row in episodes]))
         if args.stage in PILLAR_STAGES:
             count = sum(row["occlusion_events"] for row in episodes)
             recovered = [value for row in episodes for value in row["recovery_times_s"]]
@@ -231,6 +242,8 @@ if __name__ == "__main__":
                         help="Uniformly scale the red X3 target visuals around the model origin.")
     parser.add_argument("--ideal-velocity", action="store_true",
                         help="Integrate speed commands directly for quadrotor stages A, B, and C1.")
+    parser.add_argument("--free-flight-3d", action="store_true",
+                        help="Add vertical target motion and a vertical velocity action in obstacle-free quad A/B.")
     parser.add_argument("--tracking-reward", choices=TRACKING_REWARDS,
                         help="Defaults to legacy-car for quad C1 and original otherwise.")
     parser.add_argument("--luo-position-scale", type=float, default=LUO_POSITION_SCALE_M,
@@ -294,16 +307,25 @@ if __name__ == "__main__":
     if args.ideal_velocity and (args.vehicle != "quad" or args.stage not in IDEAL_VELOCITY_STAGES):
         parser.error("--ideal-velocity requires --vehicle quad and stage A, B, C1, or C2")
     if args.tracking_reward is None:
-        args.tracking_reward = "legacy-car" if args.stage == "C1" and args.vehicle == "quad" else "original"
+        use_legacy = args.stage == "C1" and args.vehicle == "quad"
+        args.tracking_reward = SAFE_EFFECTIVE_TRACKING if args.free_flight_3d else (
+            "legacy-car" if use_legacy else "original"
+        )
+    if args.free_flight_3d and (
+        args.stage not in ("A", "B") or args.vehicle != "quad" or not args.ideal_velocity
+        or args.observation != "rgb" or args.tracking_reward != SAFE_EFFECTIVE_TRACKING
+    ):
+        parser.error("--free-flight-3d requires obstacle-free A/B, RGB quad ideal velocity and safe-effective-tracking")
     if args.stage == "C2" and (
         args.vehicle != "quad" or not args.ideal_velocity
         or args.observation != "rgb" or args.tracking_reward != SAFE_EFFECTIVE_TRACKING
     ):
         parser.error("C2 requires RGB ideal-velocity quadrotors and --tracking-reward safe-effective-tracking")
     if args.target_gap_m != GOAL and (
-        not (args.smooth_c1_route or args.stage == "C2") or args.tracking_reward != SAFE_EFFECTIVE_TRACKING
+        not (args.smooth_c1_route or args.stage == "C2" or args.free_flight_3d)
+        or args.tracking_reward != SAFE_EFFECTIVE_TRACKING
     ):
-        parser.error("--target-gap-m 2 requires smooth C1 or C2 and safe-effective-tracking")
+        parser.error("--target-gap-m 2 requires smooth C1, C2 or --free-flight-3d and safe-effective-tracking")
     if args.smooth_c1_route and (not args.randomized_c1 or args.c1_pillar_count != 1):
         parser.error("--smooth-c1-route requires randomized single-pillar C1")
     if args.c2_route != "mixed" and args.stage != "C2":

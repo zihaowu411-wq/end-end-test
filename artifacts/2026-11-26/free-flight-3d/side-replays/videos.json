@@ -1,0 +1,37 @@
+{
+  "model_sha256": "3a90000ba0cebbe0581bd82415783d425a839be3f9181230c4acf74de96a79dc",
+  "policy": "deterministic",
+  "duration_s": 12,
+  "videos": [
+    {
+      "seed": 28409,
+      "file": "3d-side-good-tracking-seed-28409.mp4",
+      "valid_rate": 0.8875,
+      "visible_rate": 1.0,
+      "altitude_mae_m": 0.3150472816354852,
+      "first_lost_s": null,
+      "visible_too_far_steps": 27,
+      "sha256": "e17886fdfaebcb80076881bf0fc49d4976f0ac655350d006ccc517f447859e77"
+    },
+    {
+      "seed": 28400,
+      "file": "3d-side-target-lost-seed-28400.mp4",
+      "valid_rate": 0.3875,
+      "visible_rate": 0.3875,
+      "altitude_mae_m": 0.8146701738914902,
+      "first_lost_s": 4.7,
+      "visible_too_far_steps": 0,
+      "sha256": "1e3af0faeba3adb20f2804f8a7a028bb357cc5d716afcfbf9766ced77ab8e6ce"
+    },
+    {
+      "seed": 28413,
+      "file": "3d-side-visible-gap-too-far-seed-28413.mp4",
+      "valid_rate": 0.29583333333333334,
+      "visible_rate": 1.0,
+      "altitude_mae_m": 0.4179848338855919,
+      "first_lost_s": null,
+      "visible_too_far_steps": 169,
+      "sha256": "aa06a1e11a3341c85b409dfe8a546908ea2abbd0ba9cea7111655d542063c0e9"
+    }
+  ]
+}

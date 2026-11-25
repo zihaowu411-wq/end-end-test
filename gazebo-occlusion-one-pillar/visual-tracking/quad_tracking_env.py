@@ -323,6 +323,73 @@ class IdealQuadTracking(QuadTracking):
         return self.advance()
 
 
+class FreeFlightQuadTracking(IdealQuadTracking):
+    """Obstacle-free RGB tracking with world-vertical velocity and 3D distance."""
+
+    neutral_action = (*IdealQuadTracking.neutral_action, 0.0)
+    max_vertical_speed_mps = 0.8
+    altitude_limits_m = (1.3, 4.7)
+    target_amplitude_m = (0.90, 1.10)
+    target_period_s = (10.0, 14.0)
+
+    @classmethod
+    def free_flight_config(cls):
+        return dict(action_order=["forward_mps", "lateral_mps", "yaw_rate_radps", "vertical_mps"],
+                    distance_metric="euclidean_3d", spawn_altitude_m=cls.spawn_z,
+                    altitude_limits_m=cls.altitude_limits_m, max_vertical_speed_mps=cls.max_vertical_speed_mps,
+                    target_altitude_amplitude_m=cls.target_amplitude_m, target_altitude_period_s=cls.target_period_s)
+
+    def tracking_start(self, rng):
+        start, target = super().tracking_start(rng)
+        dx, dy = target.x - start.x, target.y - start.y
+        scale = self.target_gap_m / math.hypot(dx, dy)
+        return (replace(start, z=self.spawn_z),
+                replace(target, x=start.x + scale * dx, y=start.y + scale * dy, z=self.spawn_z))
+
+    def reset(self, *, seed=None, options=None):
+        obs, info = super().reset(seed=seed, options=options)
+        rng = self.np_random
+        amplitude = rng.uniform(*self.target_amplitude_m) * rng.choice((-1.0, 1.0))
+        period = rng.uniform(*self.target_period_s)
+        elapsed_s = np.arange(self.duration + 1) * DT
+        self.target_altitudes = self.spawn_z + amplitude * np.sin(math.tau * elapsed_s / period)
+        self.pursuer_vertical_speed = 0.0
+        self.target_vertical_speed = 0.0
+        return obs, info
+
+    def _teleport(self, start, target, *, pillars=()):
+        super()._teleport(start, target, pillars=pillars, use_pose_altitude=True)
+
+    def tracking_distance(self, pursuer, target):
+        return math.hypot(target.x - pursuer.x, target.y - pursuer.y, target.z - pursuer.z)
+
+    def pursuer_command(self, action):
+        command = super().pursuer_command(action)
+        self.pursuer_vertical_speed = float(action[3]) * self.max_vertical_speed_mps
+        command["vz"] = self.pursuer_vertical_speed
+        return command
+
+    def advance_motion(self):
+        with self.condition:
+            _, pursuer, target = self.poses[-1]
+        pursuer_next = self.integrate_pose(pursuer, self.pursuer_velocity)
+        target_next = self.integrate_pose(target, self.target_velocity)
+        target_z = float(self.target_altitudes[self.elapsed + 1])
+        self.target_vertical_speed = (target_z - target.z) / DT
+        self._teleport(replace(pursuer_next, z=pursuer.z + DT * self.pursuer_vertical_speed),
+                       replace(target_next, z=target_z))
+        return self.advance()
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = super().step(action)
+        info["target_vz"] = self.target_vertical_speed
+        return obs, reward, terminated, truncated, info
+
+    def outside(self, pursuer):
+        lower, upper = self.altitude_limits_m
+        return GazeboTracking.outside(self, pursuer) or not lower <= pursuer.z <= upper
+
+
 
 class TransverseClearanceShaping:
     """Shape the distance to the target's observed side of an obstacle's lateral envelope."""

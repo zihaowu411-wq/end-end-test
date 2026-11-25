@@ -137,7 +137,11 @@ def make_env(args, directory, index):
     if args.vehicle == "quad":
         from quad_tracking_env import IdealQuadTracking, QuadTracking, RandomizedC1QuadTracking, TruthQuadTracking
         quad_environment = IdealQuadTracking if getattr(args, "ideal_velocity", False) else QuadTracking
-        if args.stage == "C2":
+        if getattr(args, "free_flight_3d", False):
+            from quad_tracking_env import FreeFlightQuadTracking
+
+            quad_environment = FreeFlightQuadTracking
+        elif args.stage == "C2":
             from multi_pillar_env import MultiPillarQuadTracking
             quad_environment = partial(
                 MultiPillarQuadTracking, c2_route=getattr(args, "c2_route", "mixed"),
@@ -248,6 +252,10 @@ def train(args):
                                 gap_scale=LEGACY_CAR_LINEAR_DISTANCE_SCALES[args.tracking_reward])
     if args.tracking_reward == SAFE_EFFECTIVE_TRACKING:
         config["reward"] = safe_tracking_reward_config(target_gap_m)
+    if getattr(args, "free_flight_3d", False):
+        from quad_tracking_env import FreeFlightQuadTracking
+
+        config["flight"] = FreeFlightQuadTracking.free_flight_config()
     if args.stage == "C2":
         from multi_pillar_env import MultiPillarQuadTracking
         config["target_route"] = MultiPillarQuadTracking.layout_config(args.c2_route)
@@ -309,6 +317,8 @@ if __name__ == "__main__":
                         help="Uniformly scale the red X3 target visuals around the model origin.")
     parser.add_argument("--ideal-velocity", action="store_true",
                         help="Integrate speed commands directly for quadrotor stages A, B, and C1.")
+    parser.add_argument("--free-flight-3d", action="store_true",
+                        help="Add vertical target motion and a vertical velocity action in obstacle-free quad A/B.")
     parser.add_argument("--tracking-reward", choices=TRACKING_REWARDS,
                         help="Defaults to legacy-car for quad C1 or ideal-velocity mode.")
     parser.add_argument("--luo-position-scale", type=float, default=LUO_POSITION_SCALE_M,
@@ -375,16 +385,24 @@ if __name__ == "__main__":
         parser.error("--observation truth requires --ideal-velocity")
     if args.tracking_reward is None:
         use_legacy = args.ideal_velocity or (args.stage == "C1" and args.vehicle == "quad")
-        args.tracking_reward = "legacy-car" if use_legacy else "original"
+        args.tracking_reward = SAFE_EFFECTIVE_TRACKING if args.free_flight_3d else (
+            "legacy-car" if use_legacy else "original"
+        )
+    if args.free_flight_3d and (
+        args.stage not in ("A", "B") or args.vehicle != "quad" or not args.ideal_velocity
+        or args.observation != "rgb" or args.tracking_reward != SAFE_EFFECTIVE_TRACKING
+    ):
+        parser.error("--free-flight-3d requires obstacle-free A/B, RGB quad ideal velocity and safe-effective-tracking")
     if args.stage == "C2" and (
         args.vehicle != "quad" or not args.ideal_velocity
         or args.observation != "rgb" or args.tracking_reward != SAFE_EFFECTIVE_TRACKING
     ):
         parser.error("C2 requires RGB ideal-velocity quadrotors and --tracking-reward safe-effective-tracking")
     if args.target_gap_m != GOAL and (
-        not (args.smooth_c1_route or args.stage == "C2") or args.tracking_reward != SAFE_EFFECTIVE_TRACKING
+        not (args.smooth_c1_route or args.stage == "C2" or args.free_flight_3d)
+        or args.tracking_reward != SAFE_EFFECTIVE_TRACKING
     ):
-        parser.error("--target-gap-m 2 requires smooth C1 or C2 and safe-effective-tracking")
+        parser.error("--target-gap-m 2 requires smooth C1, C2 or --free-flight-3d and safe-effective-tracking")
     if args.smooth_c1_route and (not args.randomized_c1 or args.c1_pillar_count != 1):
         parser.error("--smooth-c1-route requires randomized single-pillar C1")
     if args.c2_route != "mixed" and args.stage != "C2":
