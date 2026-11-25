@@ -33,3 +33,24 @@ python "$benchmark/evaluate_scenes.py" --scenes "$benchmark/scenes.json" \
 ```
 
 脚本以确定性策略评估，输出逐步记录 `trace.csv`、统计 `evaluation.json`，并可保存 `evaluation.mp4`。整局有效跟踪率以 2,000 步为分母，符合距离 1.5–2.5 m 且目标可见的步数计入分子。通过条件为全程安全完成且有效跟踪率至少 80%。
+
+## 正常尺寸全红 X3
+
+X3 模型使用 `--target x3` 和 [累计 524,288 步的 C2 最终权重](../../../../artifacts/2026-11-25/native-x3-c1-c2/c2-final.zip)。三个场景清单使用相同的 4 条路线、障碍物和 2 m 初始间距，按不同速度重放。
+
+| 目标速度 | 场景清单 | 每局时长 |
+| ---: | --- | ---: |
+| 1.00 m/s | [scenes.json](scenes.json) | 100.00 s |
+| 0.75 m/s | [scenes-075.json](scenes-075.json) | 133.35 s |
+| 0.60 m/s | [scenes-060.json](scenes-060.json) | 166.70 s |
+
+从仓库根目录运行四场景评估。输出目录应为一个新目录，父目录已存在。使用项目的 Gazebo Python 环境。录像依赖 FFmpeg、Pillow 和 DejaVu Sans 字体。
+
+```bash
+bench=gazebo-occlusion-one-pillar/visual-tracking/benchmarks/c2_v4
+model=artifacts/2026-11-25/native-x3-c1-c2/c2-final.zip
+GAZEBO_PYTHON=/opt/gazebo-visual-tracking/venv/bin/python \
+  bash "$bench/run_x3_suite.sh" "$bench/scenes-060.json" "$model" /tmp/c2-v4-x3-060
+```
+
+脚本保存逐场景记录、完整路线及前 100 秒指标，并为持续时间最长的场景录制一段回放。多局持续时间相同时，选取整局有效跟踪率最接近四局中位数的场景。原始结果见 [三档速度的评估与回放](../../../../artifacts/2026-11-25/native-x3-c2-v4/)。

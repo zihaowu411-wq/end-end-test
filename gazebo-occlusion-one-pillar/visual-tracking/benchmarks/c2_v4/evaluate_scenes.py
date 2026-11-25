@@ -19,17 +19,24 @@ from quad_tracking_env import IdealQuadTracking, PILLAR_HEIGHT_M, TARGET_CUBE_SI
 from tracking_env import CONTROL_HZ, DT, Pose, SAFE_EFFECTIVE_TRACKING
 
 
+FINAL_MODEL_STEPS = {"cube": 262144, "x3": 524288}
+TARGET_LABELS = {"cube": "red cube", "x3": "native red X3"}
+
+
 class V4WallTracking(MultiPillarQuadTracking):
     """Use the frozen policy's original RGB and vehicle interface on V4 geometry."""
 
     overview_height = 46.0
 
-    def __init__(self, world, directory, scene, *, record=False):
+    def __init__(self, world, directory, scene, *, target_kind="cube", record=False):
         self.scene = scene
+        self.target_kind = target_kind
+        self.target_half_size = (TARGET_CUBE_SIDE_M / 2,) * 2 if target_kind == "cube" else self.collision_half_size
         self.walls = tuple(Pillar(w["x"], w["y"], w["yaw"], (w["length"]/2, w["width"]/2))
                            for w in scene["walls"])
         super().__init__(world, directory, stage="C2", rtf=30, record=record, target_gap_m=2.0,
-                         cube_target=True, camera_resolution=(256, 144), tracking_reward=SAFE_EFFECTIVE_TRACKING)
+                         cube_target=target_kind == "cube", target_visual_scale=1.0,
+                         camera_resolution=(256, 144), tracking_reward=SAFE_EFFECTIVE_TRACKING)
 
     def build_world(self, template, output, rtf):
         IdealQuadTracking.build_world(self, template, output, rtf)
@@ -70,7 +77,7 @@ class V4WallTracking(MultiPillarQuadTracking):
 
     def measure(self, pursuer, target, collided):
         info = IdealQuadTracking.measure(self, pursuer, target, collided)
-        info["target_clearance_m"] = self.nearest_clearance(target, (TARGET_CUBE_SIDE_M/2,)*2)
+        info["target_clearance_m"] = self.nearest_clearance(target, self.target_half_size)
         if info["target_clearance_m"] <= 0:
             raise RuntimeError("The scripted V4 target overlapped a Gazebo wall")
         return info
@@ -110,7 +117,9 @@ class EvaluationVideo:
         frame = self.image.new("RGB", (1280, 720), "#11212a")
         draw = self.draw.Draw(frame)
         white, grey, orange, blue = "#f4f9fb", "#cfe0e9", "#ffb087", "#71dbff"
-        draw.text((24,12), f"Frozen C2 policy  |  V4 wall route  |  Seed {env.scene['seed']:02d}", font=self.title, fill=white)
+        label = TARGET_LABELS[env.target_kind]
+        draw.text((24,12), f"C2 {label}  |  Target {env.scene['target_speed_mps']:.2f} m/s  |  Seed {env.scene['seed']:02d}",
+                  font=self.title, fill=white)
         draw.text((1256,16), f"{info['time']:.1f} / {self.seconds:.0f} s  |  4x", font=self.label, fill=grey, anchor="ra")
         draw.text((24,60), "Pursuer onboard RGB", font=self.label, fill=white)
         draw.text((568,60), "Gazebo overview", font=self.label, fill=white)
@@ -165,6 +174,14 @@ def check_manifest(scene, env):
     if np.max(np.linalg.norm(np.diff(samples[:, :2], axis=0), axis=1) / DT) > scene["target_speed_mps"] + 1e-6:
         raise ValueError("A V4 route sample moved faster than the source setting")
     generated = ET.parse(env.directory / "world.sdf").getroot().find("world")
+    target = generated.find("model[@name='target']")
+    if target is None:
+        raise RuntimeError("The V4 target is missing from the Gazebo world")
+    target_is_cube = target.find(".//visual[@name='tracking_cube']") is not None
+    if target_is_cube != (env.target_kind == "cube"):
+        raise RuntimeError("The generated V4 target differs from the requested target")
+    if env.target_kind == "x3" and target.find(".//geometry/mesh") is None:
+        raise RuntimeError("The V4 target is missing the native X3 mesh")
     walls = [m for m in generated.findall("model") if m.get("name", "").startswith("v4_wall_")]
     if len(walls) != len(scene["walls"]):
         raise RuntimeError("Scene wall count differs from the archived manifest")
@@ -183,11 +200,12 @@ def evaluate(args, scene):
         torch.set_num_threads(2)
         torch.set_num_interop_threads(1)
         policy = RecurrentPPO.load(args.model, device="cpu")
-        if (policy.num_timesteps != 262144 or policy.observation_space.shape != (3,144,256)
+        expected_steps = FINAL_MODEL_STEPS[args.target]
+        if (policy.num_timesteps != expected_steps or policy.observation_space.shape != (3,144,256)
                 or policy.action_space.shape != (3,)):
-            raise ValueError("Expected the trained C2 RGB final checkpoint at cumulative step 262144")
+            raise ValueError(f"Expected the {TARGET_LABELS[args.target]} C2 final checkpoint at step {expected_steps}")
     args.output.mkdir(parents=True, exist_ok=False)
-    env = V4WallTracking(args.world, args.output / "sim", scene, record=args.video)
+    env = V4WallTracking(args.world, args.output / "sim", scene, target_kind=args.target, record=args.video)
     video = None
     try:
         obs, initial = env.reset(seed=scene["seed"])
@@ -234,6 +252,8 @@ def evaluate(args, scene):
             writer.writerows(rows)
         report = dict(seed=scene["seed"], fingerprint=scene["fingerprint"], mode="deterministic" if policy else "smoke",
                       model_sha256=hashlib.sha256(args.model.read_bytes()).hexdigest() if policy else None,
+                      target=TARGET_LABELS[args.target], target_visual_scale=1.0,
+                      policy_timesteps=policy.num_timesteps if policy else None,
                       steps_executed=len(rows), horizon_steps=env.duration, survival_s=rows[-1]["time"], stop=stop,
                       valid_rate=sum(r["valid"] for r in rows)/env.duration,
                       visible_rate=sum(r["visible"] for r in rows)/env.duration,
@@ -259,6 +279,7 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--world", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--target", choices=tuple(TARGET_LABELS), default="cube")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--model", type=Path)
     mode.add_argument("--smoke-steps", type=int)
