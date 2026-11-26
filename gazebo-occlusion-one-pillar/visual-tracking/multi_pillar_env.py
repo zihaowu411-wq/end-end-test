@@ -10,7 +10,9 @@ from c2_layout import (
     COLUMNS_M, FIELD_SIZE_M, MIN_SEPARATION_M, MIN_TARGET_CLEARANCE_M, ROUTE_DURATIONS_S,
     MIN_TURN_RADIUS_M, PILLAR_COUNT, ROWS_M, TARGET_SPEED_MPS, footprint, sample_layout,
 )
-from quad_tracking_env import IdealQuadTracking, PILLAR_HEIGHT_M, TARGET_CUBE_SIDE_M, TransverseClearanceShaping
+from quad_tracking_env import (
+    IdealQuadTracking, ObstacleVerticalMotion, PILLAR_HEIGHT_M, TARGET_CUBE_SIDE_M, TransverseClearanceShaping,
+)
 from tracking_env import CONTROL_HZ, DT, GAMMA, Pose, blocked_by_pillar, pillar_clearance
 
 
@@ -77,6 +79,8 @@ class RouteClearanceShaping:
 class MultiPillarQuadTracking(IdealQuadTracking):
     """Keep the C1 camera and actions while varying C2 geometry and route on reset."""
 
+    require_interior_encounters = False
+
     def __init__(self, *args, c2_route="mixed", transverse_clearance_shaping=False, **kwargs):
         self.c2_route = c2_route
         self.transverse_clearance_shaping = transverse_clearance_shaping
@@ -122,7 +126,8 @@ class MultiPillarQuadTracking(IdealQuadTracking):
 
     def c2_layout(self, rng):
         radius = math.hypot(TARGET_CUBE_SIDE_M/2, TARGET_CUBE_SIDE_M/2)
-        self.layout = sample_layout(rng, DT, radius,mode=self.c2_route)
+        self.layout = sample_layout(rng, DT, radius, mode=self.c2_route,
+                                    require_interior_encounters=self.require_interior_encounters)
         self.duration = len(self.layout.xy)-1
         self.route_shaping = None
         if self.transverse_clearance_shaping and not self.remove_pillar:
@@ -156,12 +161,8 @@ class MultiPillarQuadTracking(IdealQuadTracking):
     def target_command(self):
         return self.target_motion[self.elapsed]
 
-    def advance_motion(self):
-        with self.condition:
-            _, pursuer, _ = self.poses[-1]
-        self._teleport(self.integrate_pose(pursuer, self.pursuer_velocity),
-                       self.target_path[self.elapsed+1])
-        return self.advance()
+    def next_target_pose(self, target):
+        return self.target_path[self.elapsed + 1]
 
     def target_occluded(self, cx, cy, target):
         for pillar in self.layout.pillars:
@@ -201,4 +202,11 @@ class MultiPillarQuadTracking(IdealQuadTracking):
     def outside(self, pursuer):
         width, length = FIELD_SIZE_M
         return (abs(pursuer.x) > width/2 - 0.5 or abs(pursuer.y) > length/2 - 0.5
-                or abs(pursuer.z - self.spawn_z) > 0.50)
+                or self.outside_altitude(pursuer))
+
+
+class FreeFlightC2QuadTracking(ObstacleVerticalMotion, MultiPillarQuadTracking):
+    require_interior_encounters = True
+
+    def target_crossing_steps(self):
+        return tuple(event.sample_index for event in self.layout.encounters)

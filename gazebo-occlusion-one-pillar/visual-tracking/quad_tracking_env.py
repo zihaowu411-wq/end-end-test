@@ -267,15 +267,18 @@ class QuadTracking(GazeboTracking):
         return info
 
     def outside(self, pursuer):
-        return super().outside(pursuer) or abs(pursuer.z - self.spawn_z) > 0.50
+        return super().outside(pursuer) or self.outside_altitude(pursuer)
+
+    def outside_altitude(self, pursuer):
+        return abs(pursuer.z - self.spawn_z) > 0.50
 
 
 class IdealQuadTracking(QuadTracking):
-    """Fixed-altitude kinematics with Gazebo RGB and contact sensing."""
+    """Velocity integration with Gazebo RGB and contact sensing."""
 
     def build_world(self, template, output, rtf):
         if self.stage not in IDEAL_VELOCITY_STAGES:
-            raise ValueError("Ideal velocity mode requires quadrotor stage A, B, or C1")
+            raise ValueError("Ideal velocity mode requires quadrotor stage A, B, C1, or C2")
         super().build_world(template, output, rtf)
         tree = ET.parse(output)
         for name in ("pursuer", "target"):
@@ -315,44 +318,38 @@ class IdealQuadTracking(QuadTracking):
             z=ALTITUDE_M,
         )
 
+    def next_pursuer_pose(self, pursuer):
+        return self.integrate_pose(pursuer, self.pursuer_velocity)
+
+    def next_target_pose(self, target):
+        return self.integrate_pose(target, self.target_velocity)
+
     def advance_motion(self):
         with self.condition:
             _, pursuer, target = self.poses[-1]
-        self._teleport(self.integrate_pose(pursuer, self.pursuer_velocity),
-                       self.integrate_pose(target, self.target_velocity))
+        self._teleport(self.next_pursuer_pose(pursuer), self.next_target_pose(target))
         return self.advance()
 
 
-class FreeFlightQuadTracking(IdealQuadTracking):
-    """Obstacle-free RGB tracking with world-vertical velocity and 3D distance."""
+class VerticalQuadMotion:
+    """Add a vertical action and 3D following distance to ideal velocity tracking."""
 
     neutral_action = (*IdealQuadTracking.neutral_action, 0.0)
+    spawn_z = ALTITUDE_M
     max_vertical_speed_mps = 0.8
     altitude_limits_m = (1.3, 4.7)
     target_amplitude_m = (0.90, 1.10)
-    target_period_s = (10.0, 14.0)
 
     @classmethod
     def free_flight_config(cls):
         return dict(action_order=["forward_mps", "lateral_mps", "yaw_rate_radps", "vertical_mps"],
                     distance_metric="euclidean_3d", spawn_altitude_m=cls.spawn_z,
                     altitude_limits_m=cls.altitude_limits_m, max_vertical_speed_mps=cls.max_vertical_speed_mps,
-                    target_altitude_amplitude_m=cls.target_amplitude_m, target_altitude_period_s=cls.target_period_s)
-
-    def tracking_start(self, rng):
-        start, target = super().tracking_start(rng)
-        dx, dy = target.x - start.x, target.y - start.y
-        scale = self.target_gap_m / math.hypot(dx, dy)
-        return (replace(start, z=self.spawn_z),
-                replace(target, x=start.x + scale * dx, y=start.y + scale * dy, z=self.spawn_z))
+                    target_altitude_amplitude_m=cls.target_amplitude_m)
 
     def reset(self, *, seed=None, options=None):
         obs, info = super().reset(seed=seed, options=options)
-        rng = self.np_random
-        amplitude = rng.uniform(*self.target_amplitude_m) * rng.choice((-1.0, 1.0))
-        period = rng.uniform(*self.target_period_s)
-        elapsed_s = np.arange(self.duration + 1) * DT
-        self.target_altitudes = self.spawn_z + amplitude * np.sin(math.tau * elapsed_s / period)
+        self.target_altitudes = self.sample_target_altitudes(self.np_random)
         self.pursuer_vertical_speed = 0.0
         self.target_vertical_speed = 0.0
         return obs, info
@@ -369,25 +366,80 @@ class FreeFlightQuadTracking(IdealQuadTracking):
         command["vz"] = self.pursuer_vertical_speed
         return command
 
-    def advance_motion(self):
-        with self.condition:
-            _, pursuer, target = self.poses[-1]
-        pursuer_next = self.integrate_pose(pursuer, self.pursuer_velocity)
-        target_next = self.integrate_pose(target, self.target_velocity)
+    def next_pursuer_pose(self, pursuer):
+        return replace(super().next_pursuer_pose(pursuer), z=pursuer.z + DT * self.pursuer_vertical_speed)
+
+    def next_target_pose(self, target):
         target_z = float(self.target_altitudes[self.elapsed + 1])
         self.target_vertical_speed = (target_z - target.z) / DT
-        self._teleport(replace(pursuer_next, z=pursuer.z + DT * self.pursuer_vertical_speed),
-                       replace(target_next, z=target_z))
-        return self.advance()
+        return replace(super().next_target_pose(target), z=target_z)
 
     def step(self, action):
         obs, reward, terminated, truncated, info = super().step(action)
         info["target_vz"] = self.target_vertical_speed
         return obs, reward, terminated, truncated, info
 
-    def outside(self, pursuer):
+    def outside_altitude(self, pursuer):
         lower, upper = self.altitude_limits_m
-        return GazeboTracking.outside(self, pursuer) or not lower <= pursuer.z <= upper
+        return not lower <= pursuer.z <= upper
+
+
+class FreeFlightQuadTracking(VerticalQuadMotion, IdealQuadTracking):
+    """Obstacle-free RGB tracking with sinusoidal target altitude."""
+
+    target_period_s = (10.0, 14.0)
+
+    @classmethod
+    def free_flight_config(cls):
+        return dict(super().free_flight_config(), target_altitude_period_s=cls.target_period_s)
+
+    def tracking_start(self, rng):
+        start, target = super().tracking_start(rng)
+        dx, dy = target.x - start.x, target.y - start.y
+        scale = self.target_gap_m / math.hypot(dx, dy)
+        return (replace(start, z=self.spawn_z),
+                replace(target, x=start.x + scale * dx, y=start.y + scale * dy, z=self.spawn_z))
+
+    def sample_target_altitudes(self, rng):
+        amplitude = rng.uniform(*self.target_amplitude_m) * rng.choice((-1.0, 1.0))
+        period = rng.uniform(*self.target_period_s)
+        elapsed_s = np.arange(self.duration + 1) * DT
+        return self.spawn_z + amplitude * np.sin(math.tau * elapsed_s / period)
+
+
+class ObstacleVerticalMotion(VerticalQuadMotion):
+    """Make the target change altitude as it crosses every planned obstacle."""
+
+    crossing_speed_mps = (0.45, 0.60)
+
+    @classmethod
+    def free_flight_config(cls):
+        return dict(super().free_flight_config(), target_altitude_profile="smooth_obstacle_crossings",
+                    target_crossing_vertical_speed_mps=cls.crossing_speed_mps,
+                    target_crossing_direction="random_first_then_alternating")
+
+    def sample_target_altitudes(self, rng):
+        self.crossing_steps = tuple(self.target_crossing_steps())
+        anchors = np.asarray((0, *self.crossing_steps, self.duration), dtype=int)
+        if not self.crossing_steps or np.any(np.diff(anchors) <= 0):
+            raise ValueError("Obstacle crossing steps must be ordered inside the episode")
+        amplitude = float(rng.uniform(*self.target_amplitude_m))
+        crossing_speed = float(rng.uniform(*self.crossing_speed_mps))
+        self.first_crossing_direction = int(rng.choice((-1, 1)))
+        steps = np.arange(self.duration + 1)
+        interval = np.searchsorted(anchors[1:-1], steps, side="right")
+        length = anchors[interval + 1] - anchors[interval]
+        phase = math.pi * (steps - anchors[interval]) / length
+        direction = self.first_crossing_direction * np.where(interval % 2 == 0, -1, 1)
+        # Match slopes across each crossing. Tanh bounds the excursion and speed on long legs.
+        scaled = direction * crossing_speed * length * DT * np.sin(phase) / (math.pi * amplitude)
+        return self.spawn_z + amplitude * np.tanh(scaled)
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = super().step(action)
+        info["target_crossing"] = self.elapsed in self.crossing_steps
+        info["target_first_crossing_direction"] = self.first_crossing_direction
+        return obs, reward, terminated, truncated, info
 
 
 
@@ -617,12 +669,8 @@ class RandomizedC1QuadTracking(IdealQuadTracking):
     def target_command(self):
         return self.target_motion[self.elapsed]
 
-    def advance_motion(self):
-        with self.condition:
-            _, pursuer, _ = self.poses[-1]
-        self._teleport(self.integrate_pose(pursuer, self.pursuer_velocity),
-                       self.target_path[self.elapsed + 1])
-        return self.advance()
+    def next_target_pose(self, target):
+        return self.target_path[self.elapsed + 1]
 
     def measure(self, pursuer, target, collided):
         info = super().measure(pursuer, target, collided)
@@ -638,6 +686,11 @@ class RandomizedC1QuadTracking(IdealQuadTracking):
             second_x, second_y = self.pillar_centers[1]
             info.update(pillar_2_x=second_x, pillar_2_y=second_y)
         return info
+
+
+class FreeFlightC1QuadTracking(ObstacleVerticalMotion, RandomizedC1QuadTracking):
+    def target_crossing_steps(self):
+        return (int(np.searchsorted([p.y for p in self.target_path], self.pillar_center[1])),)
 
 
 class TruthQuadTracking(IdealQuadTracking):

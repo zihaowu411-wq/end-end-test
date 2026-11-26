@@ -87,7 +87,7 @@ def sample_pillars(rng):
     return tuple(pillars), separation
 
 
-def sample_layout(rng, dt, target_radius, mode="mixed"):
+def sample_layout(rng, dt, target_radius, mode="mixed", *, require_interior_encounters=False):
     """Choose a route independently on each reset, unless a mode is requested."""
     if mode not in ROUTE_MODES:
         raise ValueError(f"Unknown C2 route mode: {mode}")
@@ -95,10 +95,11 @@ def sample_layout(rng, dt, target_radius, mode="mixed"):
         mode = "weave" if rng.integers(2)==0 else "figure-eight"
     if mode == "weave":
         return sample_weave(rng,dt,target_radius)
-    return sample_figure_eight(rng,dt,target_radius)
+    return sample_figure_eight(rng, dt, target_radius,
+                               require_interior_encounters=require_interior_encounters)
 
 
-def sample_figure_eight(rng, dt, target_radius):
+def sample_figure_eight(rng, dt, target_radius, *, require_interior_encounters=False):
     """Sample an asymmetric figure-eight through a block of four pillars."""
     pillars, separation = sample_pillars(rng)
     duration = ROUTE_DURATIONS_S["figure-eight"]
@@ -185,6 +186,8 @@ def sample_figure_eight(rng, dt, target_radius):
             left = np.array((-math.sin(yaw[sample]), math.cos(yaw[sample])))
             encounters.append(Encounter(index,-1 if np.dot(relative,left)>0.0 else 1,sample))
         encounters.sort(key=lambda event:event.sample_index)
+        if require_interior_encounters and not 0 < encounters[0].sample_index < encounters[-1].sample_index < ticks:
+            continue
         if min(b.sample_index-a.sample_index for a,b in zip(encounters,encounters[1:]))*dt < 3.0:
             continue
         return Layout("figure-eight", pillars, tuple(encounters), path, yaw, speed, separation, min_target, minimum_radius)

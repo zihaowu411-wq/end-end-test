@@ -1,0 +1,9 @@
+{
+  "steps": 2883584,
+  "episodes": 20,
+  "mean_return": 17.35509855,
+  "valid_rate": 0.16954545454545455,
+  "visible_rate": 0.1981818181818182,
+  "collisions": 2,
+  "passed_episodes": 0
+}

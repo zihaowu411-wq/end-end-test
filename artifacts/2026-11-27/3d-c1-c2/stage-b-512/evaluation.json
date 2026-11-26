@@ -1,0 +1,664 @@
+{
+  "episodes": 20,
+  "completed": 20,
+  "passed": 20,
+  "collisions": 0,
+  "early_ends": 0,
+  "valid_rate": 1.0,
+  "visible_rate": 1.0,
+  "mean_distance_error_m": 0.045701239825665235,
+  "mean_altitude_error_m": 0.1779513449229159,
+  "mean_pursuer_altitude_span_m": 1.9226132013369353,
+  "mean_abs_vertical_command_mps": 0.3188430751068518,
+  "stage": "B",
+  "task": "obstacle-free 3D RGB X3 tracking",
+  "policy": "deterministic",
+  "model": "/root/autodl-tmp/results/rgb-3d-512rounds-20261126-142210-XTmulu/train/final.zip",
+  "model_sha256": "d5cbb22e49c20482f6a9fb9e04cec4273bd50df77befb55cfc28994142422b53",
+  "training_steps": 1048576,
+  "target_gap_m": 2.0,
+  "horizon_steps": 240,
+  "valid_gap_m": [
+    1.5,
+    2.5
+  ],
+  "flight": {
+    "action_order": [
+      "forward_mps",
+      "lateral_mps",
+      "yaw_rate_radps",
+      "vertical_mps"
+    ],
+    "distance_metric": "euclidean_3d",
+    "spawn_altitude_m": 3.0,
+    "altitude_limits_m": [
+      1.3,
+      4.7
+    ],
+    "max_vertical_speed_mps": 0.8,
+    "target_altitude_amplitude_m": [
+      0.9,
+      1.1
+    ],
+    "target_altitude_period_s": [
+      10.0,
+      14.0
+    ]
+  },
+  "control_hz": 20,
+  "direction_groups": {
+    "up": {
+      "episodes": 5,
+      "completed": 5,
+      "passed": 5,
+      "collisions": 0,
+      "early_ends": 0,
+      "valid_rate": 1.0,
+      "visible_rate": 1.0,
+      "mean_distance_error_m": 0.045396104440723256,
+      "mean_altitude_error_m": 0.17109042158294213,
+      "mean_pursuer_altitude_span_m": 1.8301961102858184,
+      "mean_abs_vertical_command_mps": 0.28328857048259426
+    },
+    "down": {
+      "episodes": 15,
+      "completed": 15,
+      "passed": 15,
+      "collisions": 0,
+      "early_ends": 0,
+      "valid_rate": 1.0,
+      "visible_rate": 1.0,
+      "mean_distance_error_m": 0.04580295162064589,
+      "mean_altitude_error_m": 0.18023831936957382,
+      "mean_pursuer_altitude_span_m": 1.9534188983539744,
+      "mean_abs_vertical_command_mps": 0.33069457664827095
+    }
+  },
+  "vertical_correction": {
+    "minimum_height_error_m": 0.2,
+    "visible_ticks": 2374,
+    "command_towards_target": 2230
+  },
+  "results": [
+    {
+      "seed": 28400,
+      "return_": 71.90043461934266,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.03336912008369333,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "altitude_mae_m": 0.1843429269475161,
+      "steps": 240,
+      "completed": true,
+      "passed": true,
+      "target_initial_vertical_direction": "down",
+      "pursuer_altitude_range_m": [
+        1.8311799341067672,
+        3.811291234008969
+      ],
+      "target_altitude_range_m": [
+        1.9614188441322264,
+        4.038559136653694
+      ],
+      "mean_abs_vertical_command_mps": 0.3518861459257702,
+      "vertical_correction_steps": 122,
+      "vertical_correction_hits": 117
+    },
+    {
+      "seed": 28401,
+      "return_": 71.88964828926949,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.04541280431698492,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "altitude_mae_m": 0.16922462905042887,
+      "steps": 240,
+      "completed": true,
+      "passed": true,
+      "target_initial_vertical_direction": "down",
+      "pursuer_altitude_range_m": [
+        1.903709034435453,
+        3.740673291161659
+      ],
+      "target_altitude_range_m": [
+        2.056453235951815,
+        3.9435226631634217
+      ],
+      "mean_abs_vertical_command_mps": 0.26911484261974694,
+      "vertical_correction_steps": 124,
+      "vertical_correction_hits": 121
+    },
+    {
+      "seed": 28402,
+      "return_": 71.91744190248777,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.04914669792052439,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "altitude_mae_m": 0.18479972400279437,
+      "steps": 240,
+      "completed": true,
+      "passed": true,
+      "target_initial_vertical_direction": "down",
+      "pursuer_altitude_range_m": [
+        1.8575378932990139,
+        3.6966604750044665
+      ],
+      "target_altitude_range_m": [
+        2.0587844110906337,
+        3.9411871992907717
+      ],
+      "mean_abs_vertical_command_mps": 0.2581265453109518,
+      "vertical_correction_steps": 141,
+      "vertical_correction_hits": 123
+    },
+    {
+      "seed": 28403,
+      "return_": 71.89352916134266,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.043622910202155224,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "altitude_mae_m": 0.16484224728525634,
+      "steps": 240,
+      "completed": true,
+      "passed": true,
+      "target_initial_vertical_direction": "down",
+      "pursuer_altitude_range_m": [
+        1.9431261916458629,
+        3.6961419641971593
+      ],
+      "target_altitude_range_m": [
+        2.0819874357830144,
+        3.9180384873958674
+      ],
+      "mean_abs_vertical_command_mps": 0.33735033441024526,
+      "vertical_correction_steps": 100,
+      "vertical_correction_hits": 96
+    },
+    {
+      "seed": 28404,
+      "return_": 71.92020645880712,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.03541302453176279,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "altitude_mae_m": 0.17945963122013645,
+      "steps": 240,
+      "completed": true,
+      "passed": true,
+      "target_initial_vertical_direction": "down",
+      "pursuer_altitude_range_m": [
+        1.7792130201309941,
+        3.828206963762643
+      ],
+      "target_altitude_range_m": [
+        1.9555336593690518,
+        4.044482922658853
+      ],
+      "mean_abs_vertical_command_mps": 0.2861245978716761,
+      "vertical_correction_steps": 131,
+      "vertical_correction_hits": 126
+    },
+    {
+      "seed": 28405,
+      "return_": 71.9011089698307,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.062170171859950336,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "altitude_mae_m": 0.16315023793605848,
+      "steps": 240,
+      "completed": true,
+      "passed": true,
+      "target_initial_vertical_direction": "down",
+      "pursuer_altitude_range_m": [
+        1.9137012177705772,
+        3.718181713782253
+      ],
+      "target_altitude_range_m": [
+        2.0575169997066984,
+        3.942438264802409
+      ],
+      "mean_abs_vertical_command_mps": 0.3143657514235626,
+      "vertical_correction_steps": 110,
+      "vertical_correction_hits": 106
+    },
+    {
+      "seed": 28406,
+      "return_": 71.91520709490919,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.03965218264573376,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "altitude_mae_m": 0.1747091615187461,
+      "steps": 240,
+      "completed": true,
+      "passed": true,
+      "target_initial_vertical_direction": "down",
+      "pursuer_altitude_range_m": [
+        1.8905683735013,
+        3.718620046563447
+      ],
+      "target_altitude_range_m": [
+        2.0714342443637346,
+        3.928616697425973
+      ],
+      "mean_abs_vertical_command_mps": 0.35061813588875035,
+      "vertical_correction_steps": 108,
+      "vertical_correction_hits": 105
+    },
+    {
+      "seed": 28407,
+      "return_": 71.85447487076024,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.04705988053032583,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "altitude_mae_m": 0.13228611148843944,
+      "steps": 240,
+      "completed": true,
+      "passed": true,
+      "target_initial_vertical_direction": "up",
+      "pursuer_altitude_range_m": [
+        1.9165020118840055,
+        3.736775423455985
+      ],
+      "target_altitude_range_m": [
+        2.0724746359345536,
+        3.927496600210023
+      ],
+      "mean_abs_vertical_command_mps": 0.2285333496813352,
+      "vertical_correction_steps": 85,
+      "vertical_correction_hits": 79
+    },
+    {
+      "seed": 28408,
+      "return_": 71.88695994198977,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.032190992334031145,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "altitude_mae_m": 0.1948423644730158,
+      "steps": 240,
+      "completed": true,
+      "passed": true,
+      "target_initial_vertical_direction": "down",
+      "pursuer_altitude_range_m": [
+        1.7343289992213249,
+        3.865351629927755
+      ],
+      "target_altitude_range_m": [
+        1.94323898505998,
+        4.056819591796785
+      ],
+      "mean_abs_vertical_command_mps": 0.4006958928735306,
+      "vertical_correction_steps": 133,
+      "vertical_correction_hits": 129
+    },
+    {
+      "seed": 28409,
+      "return_": 71.84538562924733,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.06801790800484814,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "altitude_mae_m": 0.20460299246821792,
+      "steps": 240,
+      "completed": true,
+      "passed": true,
+      "target_initial_vertical_direction": "down",
+      "pursuer_altitude_range_m": [
+        1.7610363104939466,
+        3.769666190184654
+      ],
+      "target_altitude_range_m": [
+        1.9944631982433358,
+        4.005555988019073
+      ],
+      "mean_abs_vertical_command_mps": 0.2913262284950664,
+      "vertical_correction_steps": 144,
+      "vertical_correction_hits": 133
+    },
+    {
+      "seed": 28410,
+      "return_": 71.8907463161455,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.04146891499963427,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "altitude_mae_m": 0.22412223764450928,
+      "steps": 240,
+      "completed": true,
+      "passed": true,
+      "target_initial_vertical_direction": "up",
+      "pursuer_altitude_range_m": [
+        1.8903948006778961,
+        3.7671676929295064
+      ],
+      "target_altitude_range_m": [
+        1.9881390152633902,
+        4.0119109785529625
+      ],
+      "mean_abs_vertical_command_mps": 0.35895543313895667,
+      "vertical_correction_steps": 162,
+      "vertical_correction_hits": 145
+    },
+    {
+      "seed": 28411,
+      "return_": 71.89316060150504,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.07153501768671265,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "altitude_mae_m": 0.14674158239064145,
+      "steps": 240,
+      "completed": true,
+      "passed": true,
+      "target_initial_vertical_direction": "up",
+      "pursuer_altitude_range_m": [
+        1.9499993097037083,
+        3.700188039913773
+      ],
+      "target_altitude_range_m": [
+        2.0663242163055586,
+        3.933685158887673
+      ],
+      "mean_abs_vertical_command_mps": 0.24143562107036512,
+      "vertical_correction_steps": 96,
+      "vertical_correction_hits": 90
+    },
+    {
+      "seed": 28412,
+      "return_": 71.94263019880727,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.02818034614193109,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "altitude_mae_m": 0.16618929900370852,
+      "steps": 240,
+      "completed": true,
+      "passed": true,
+      "target_initial_vertical_direction": "down",
+      "pursuer_altitude_range_m": [
+        1.8368957409262656,
+        3.7496230642497523
+      ],
+      "target_altitude_range_m": [
+        2.0204140870951024,
+        3.9795572084905957
+      ],
+      "mean_abs_vertical_command_mps": 0.32436887503912054,
+      "vertical_correction_steps": 117,
+      "vertical_correction_hits": 107
+    },
+    {
+      "seed": 28413,
+      "return_": 71.86732349479155,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.03526801866869929,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "altitude_mae_m": 0.16006395488667735,
+      "steps": 240,
+      "completed": true,
+      "passed": true,
+      "target_initial_vertical_direction": "up",
+      "pursuer_altitude_range_m": [
+        1.9561964799836271,
+        3.71314640790224
+      ],
+      "target_altitude_range_m": [
+        2.085796962897679,
+        3.914164869631048
+      ],
+      "mean_abs_vertical_command_mps": 0.2646049775524686,
+      "vertical_correction_steps": 97,
+      "vertical_correction_hits": 92
+    },
+    {
+      "seed": 28414,
+      "return_": 71.86167571382583,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.069257342806799,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "altitude_mae_m": 0.18692484126049697,
+      "steps": 240,
+      "completed": true,
+      "passed": true,
+      "target_initial_vertical_direction": "down",
+      "pursuer_altitude_range_m": [
+        1.8440800964087256,
+        3.750973638519644
+      ],
+      "target_altitude_range_m": [
+        2.018939455555042,
+        3.981075901722742
+      ],
+      "mean_abs_vertical_command_mps": 0.3801742464893808,
+      "vertical_correction_steps": 120,
+      "vertical_correction_hits": 111
+    },
+    {
+      "seed": 28415,
+      "return_": 71.86309447345296,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.03164869031824426,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "altitude_mae_m": 0.19223822150444309,
+      "steps": 240,
+      "completed": true,
+      "passed": true,
+      "target_initial_vertical_direction": "up",
+      "pursuer_altitude_range_m": [
+        1.8174215967208132,
+        3.7642171861976377
+      ],
+      "target_altitude_range_m": [
+        1.9909267714783032,
+        4.009026408698671
+      ],
+      "mean_abs_vertical_command_mps": 0.32291347096984585,
+      "vertical_correction_steps": 118,
+      "vertical_correction_hits": 100
+    },
+    {
+      "seed": 28416,
+      "return_": 71.86990725188843,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.049476339522002546,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "altitude_mae_m": 0.16269707745783016,
+      "steps": 240,
+      "completed": true,
+      "passed": true,
+      "target_initial_vertical_direction": "down",
+      "pursuer_altitude_range_m": [
+        1.9224673375487311,
+        3.7563566618412723
+      ],
+      "target_altitude_range_m": [
+        2.042518635933462,
+        3.957523533989935
+      ],
+      "mean_abs_vertical_command_mps": 0.3144661183593174,
+      "vertical_correction_steps": 107,
+      "vertical_correction_hits": 105
+    },
+    {
+      "seed": 28417,
+      "return_": 71.86855496977468,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.043391018675028564,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "altitude_mae_m": 0.19633464967574094,
+      "steps": 240,
+      "completed": true,
+      "passed": true,
+      "target_initial_vertical_direction": "down",
+      "pursuer_altitude_range_m": [
+        1.731640884578227,
+        3.8761292921379216
+      ],
+      "target_altitude_range_m": [
+        1.9022812603405144,
+        4.097726160586115
+      ],
+      "mean_abs_vertical_command_mps": 0.3651211370682965,
+      "vertical_correction_steps": 117,
+      "vertical_correction_hits": 112
+    },
+    {
+      "seed": 28418,
+      "return_": 71.91655227566001,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.04069471126392435,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "altitude_mae_m": 0.1975096114114257,
+      "steps": 240,
+      "completed": true,
+      "passed": true,
+      "target_initial_vertical_direction": "down",
+      "pursuer_altitude_range_m": [
+        1.7703734413534393,
+        3.877592302896081
+      ],
+      "target_altitude_range_m": [
+        1.902706287032626,
+        4.097264083172809
+      ],
+      "mean_abs_vertical_command_mps": 0.37838253374832376,
+      "vertical_correction_steps": 121,
+      "vertical_correction_hits": 119
+    },
+    {
+      "seed": 28419,
+      "return_": 71.89840316158228,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.04704870400031882,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "altitude_mae_m": 0.1739453968322346,
+      "steps": 240,
+      "completed": true,
+      "passed": true,
+      "target_initial_vertical_direction": "down",
+      "pursuer_altitude_range_m": [
+        1.7131500272452826,
+        3.87882350973785
+      ],
+      "target_altitude_range_m": [
+        1.9019273109692094,
+        4.098086507543615
+      ],
+      "mean_abs_vertical_command_mps": 0.33829726420032485,
+      "vertical_correction_steps": 121,
+      "vertical_correction_hits": 114
+    }
+  ]
+}

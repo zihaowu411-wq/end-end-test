@@ -1,0 +1,15 @@
+{
+  "stage": "C2",
+  "status": "stopped_by_user",
+  "checkpoint": "checkpoint-3647488.zip",
+  "completed_c2_rounds": 499,
+  "planned_c2_rounds": 768,
+  "c2_steps_used_for_updates": 1021952,
+  "sb3_sampled_timestep_counter": 3647488,
+  "resume_c2_rounds": 294,
+  "model_sha256": "67096ffd415fe11f0ccbe2ff82ecda8936cb5ee959d71b2ab0a02dec70df736f",
+  "sb3_epochs": 3810,
+  "model_includes_optimizer_state": true,
+  "evaluated": false,
+  "saved_at": "2026-11-27T00:45:42+08:00"
+}

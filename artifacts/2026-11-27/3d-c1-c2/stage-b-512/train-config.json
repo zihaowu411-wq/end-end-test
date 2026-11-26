@@ -1,0 +1,103 @@
+{
+  "world": "../one_pillar.sdf",
+  "output": "/root/autodl-tmp/results/rgb-3d-512rounds-20261126-142210-XTmulu/train",
+  "stage": "B",
+  "vehicle": "quad",
+  "cube_target": false,
+  "target_visual_scale": 1.0,
+  "ideal_velocity": true,
+  "free_flight_3d": true,
+  "tracking_reward": "safe-effective-tracking",
+  "luo_position_scale": 3.0,
+  "horizontal_fov_penalty": false,
+  "camera_resolution": [
+    256,
+    144
+  ],
+  "observation": "rgb",
+  "observe_target_motion": false,
+  "feedforward": false,
+  "seed": 17,
+  "steps": 1048576,
+  "rtf": 30.0,
+  "device": "cuda",
+  "environments": 8,
+  "rollout_steps": 256,
+  "learning_rate": 0.0001,
+  "resume": null,
+  "clearance_penalty": false,
+  "clearance_threshold": 2.0,
+  "max_clearance_penalty": 0.0,
+  "mirrored_pillar": null,
+  "randomized_c1": false,
+  "target_gap_m": 2.0,
+  "c2_route": "mixed",
+  "smooth_c1_route": false,
+  "transverse_clearance_shaping": false,
+  "c1_pillar_count": 1,
+  "algorithm": "RecurrentPPO",
+  "n_steps": 256,
+  "batch_size": 64,
+  "n_epochs": 5,
+  "gamma": 0.9969894400953795,
+  "gae_lambda": 0.9847298018175751,
+  "clip_range": 0.2,
+  "ent_coef": 0.005,
+  "target_kl": 0.035,
+  "lstm_hidden_size": 96,
+  "control_hz": 20,
+  "camera_hz": 20,
+  "gap_metres": 2.0,
+  "reward": {
+    "valid_tracking_weight": 0.8,
+    "smooth_tracking_weight": 0.19999999999999996,
+    "distance_weight": 0.7,
+    "center_weight": 0.3,
+    "gap_band_m": [
+      1.5,
+      2.5
+    ],
+    "gap_scale_m": 0.95,
+    "bearing_scale_deg": 35.0,
+    "step_scale": 0.3,
+    "lost": 0.0,
+    "collision": -5.0,
+    "clearance_factor_knots": [
+      [
+        0.0,
+        0.0
+      ],
+      [
+        0.3,
+        0.83
+      ],
+      [
+        2.0,
+        1.0
+      ]
+    ]
+  },
+  "flight": {
+    "action_order": [
+      "forward_mps",
+      "lateral_mps",
+      "yaw_rate_radps",
+      "vertical_mps"
+    ],
+    "distance_metric": "euclidean_3d",
+    "spawn_altitude_m": 3.0,
+    "altitude_limits_m": [
+      1.3,
+      4.7
+    ],
+    "max_vertical_speed_mps": 0.8,
+    "target_altitude_amplitude_m": [
+      0.9,
+      1.1
+    ],
+    "target_altitude_period_s": [
+      10.0,
+      14.0
+    ]
+  }
+}
