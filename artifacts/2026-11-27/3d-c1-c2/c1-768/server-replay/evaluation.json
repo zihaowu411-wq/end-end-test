@@ -1,0 +1,160 @@
+{
+  "algorithm": "RecurrentPPO",
+  "observe_target_motion": false,
+  "vehicle": "quad",
+  "ideal_velocity": true,
+  "stage": "C1",
+  "model": "/root/autodl-tmp/repos/end-end-test/artifacts/2026-11-27/3d-c1-c2/c1-768/final.zip",
+  "episodes": 1,
+  "target_gap_m": 2.0,
+  "observation": "rgb",
+  "tracking_reward": "safe-effective-tracking",
+  "cube_target": false,
+  "target_visual_scale": 1.0,
+  "horizontal_fov_penalty": false,
+  "blank_rgb": false,
+  "constant_speed_mps": null,
+  "camera_hz": 20,
+  "control_hz": 20,
+  "camera_resolution": [
+    256,
+    144
+  ],
+  "gap_band_m": [
+    1.5,
+    2.5
+  ],
+  "valid_rate": 1.0,
+  "visible_rate": 1.0,
+  "mean_gap_error_m": 0.13440970576970449,
+  "collisions": 0,
+  "early_ends": 0,
+  "results": [
+    {
+      "seed": 28402,
+      "return_": 124.90952515376048,
+      "valid": 1.0,
+      "visible": 1.0,
+      "gap_mae": 0.13440970576970449,
+      "collision": false,
+      "ended_early": false,
+      "occlusion_events": 0,
+      "reacquired": 0,
+      "recovery_times_s": [],
+      "gap_recovery_times_s": [],
+      "altitude_mae_m": 0.021104093870181296,
+      "steps": 440,
+      "horizon_steps": 440,
+      "target_first_crossing_direction": 1,
+      "target_crossings": [
+        {
+          "time_s": 10.15,
+          "altitude_m": 3.0,
+          "vertical_speed_mps": 0.4989666999195741
+        }
+      ],
+      "side": "left",
+      "passed_pillar": true,
+      "post_pillar_valid_rate": 1.0,
+      "pillar_center_m": [
+        0.3403518156111518,
+        -1.4814894192629549
+      ]
+    }
+  ],
+  "flight": {
+    "action_order": [
+      "forward_mps",
+      "lateral_mps",
+      "yaw_rate_radps",
+      "vertical_mps"
+    ],
+    "distance_metric": "euclidean_3d",
+    "spawn_altitude_m": 3.0,
+    "altitude_limits_m": [
+      1.3,
+      4.7
+    ],
+    "max_vertical_speed_mps": 0.8,
+    "target_altitude_amplitude_m": [
+      0.9,
+      1.1
+    ],
+    "target_altitude_profile": "smooth_obstacle_crossings",
+    "target_crossing_vertical_speed_mps": [
+      0.45,
+      0.6
+    ],
+    "target_crossing_direction": "random_first_then_alternating"
+  },
+  "mean_altitude_error_m": 0.021104093870181296,
+  "occlusion_events": 0,
+  "reacquired": 0,
+  "reacquisition_rate": null,
+  "mean_reacquisition_s": null,
+  "gap_restored": 0,
+  "mean_gap_recovery_s": null,
+  "clearance_penalty_enabled": false,
+  "mean_episode_minimum_clearance_m": 0.29012356001465966,
+  "reward": {
+    "valid_tracking_weight": 0.8,
+    "smooth_tracking_weight": 0.19999999999999996,
+    "distance_weight": 0.7,
+    "center_weight": 0.3,
+    "gap_band_m": [
+      1.5,
+      2.5
+    ],
+    "gap_scale_m": 0.95,
+    "bearing_scale_deg": 35.0,
+    "step_scale": 0.3,
+    "lost": 0.0,
+    "collision": -5.0,
+    "clearance_factor_knots": [
+      [
+        0.0,
+        0.0
+      ],
+      [
+        0.3,
+        0.83
+      ],
+      [
+        2.0,
+        1.0
+      ]
+    ],
+    "transverse_clearance_shaping": {
+      "gain": 1.0,
+      "lookahead_m": 4.5,
+      "side_confirmation_m": 0.2,
+      "safety_margin_m": 0.1,
+      "reference_frame": "initial_pursuer_heading",
+      "terminal_potential": 0.0,
+      "time_limit_is_terminal": true
+    }
+  },
+  "target_route": {
+    "duration_s": 22,
+    "nominal_target_start_distance_m": 7.3,
+    "entry_length_m": 5.0,
+    "pass_distance_m": 1.55,
+    "exit_length_m": 5.3,
+    "target_speed_mps": [
+      0.7,
+      0.8
+    ]
+  },
+  "passed": true,
+  "pillar_removed": false,
+  "randomized_c1": true,
+  "c1_pillar_count": 1,
+  "routes": {
+    "left": {
+      "episodes": 1,
+      "passed_pillar": 1,
+      "valid_rate": 1.0,
+      "collisions": 0
+    }
+  }
+}

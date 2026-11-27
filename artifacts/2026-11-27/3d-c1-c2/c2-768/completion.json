@@ -1,0 +1,12 @@
+{
+  "stage": "C2",
+  "source_model": "/root/autodl-tmp/repos/end-end-test/artifacts/2026-11-27/3d-c1-c2/c2-499/checkpoint-3647488.zip",
+  "recovered_c2_rounds": 499,
+  "resumed_c2_rounds": 269,
+  "total_c2_rounds": 768,
+  "new_training_steps": 550912,
+  "total_c2_steps_used_for_updates": 1572864,
+  "final_sb3_counter": 4198400,
+  "final_model": "/root/autodl-tmp/results/c2-499-to-768-20261127-135039-wGoGuZ/train/final.zip",
+  "model_sha256": "5dabb013fa96b0885f8f3fa55b51b01ebe5652e2a9eead52f8a54a8699b0eb07"
+}
